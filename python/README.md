@@ -1,7 +1,7 @@
-# lammps_io
-`lammps_io.py`を実行すればとりあえずデータを読み込めるようになってる。
+# lammpsIO
+`lammpsIO.py`を実行すればとりあえずデータを読み込めるようになってる。
 ```
-python3 lammps_io.py --input data.lammpstrj
+python3 lammpsIO.py --input data.lammpstrj
 ```
 
 基本的には、以下の様に1スナップショットずつ読み込んでいく。
