@@ -10,39 +10,28 @@ python3 lammpsIO.py --input data.lammpstrj
 import lammps_io as lmp
 import numpy as np
 
-traj = lmp.LammpsTrajectory('data.lammpstrj')
+lmp = lmp.lammpstrjReader('dump.lammpstrj')
 ```
-このように`traj`を経由してデータにアクセスしていく。
+このように`lmp`を経由してデータにアクセスしていく。
 例えば、
 ```
 while True:
-    snapshot = traj.read_snapshot()
-    print(snapshot['box_bounds'])
-    print(snapshot['atom_data'])
+    lmp.read_snapshot()
+    print(lmp.timestep)
+    print(lmp.num_atoms)
 ```
 のようにすれば、スナップショットの最後まで読み込むことができる。
-`read_snapshot`は辞書型の配列を返す。それぞれ、
+lmpmpstrjReaderの中身は以下の通り。
 - `timestep`: タイムステップ
 - `num_atoms`: 原子の数
 - `box_bounds`: ボックスの境界条件
-- `atoms`: ATOM行の情報全て。空白文字でsplitしている。
-注意すべきは、`atoms`行である。
+- `mol`: 分子の情報
+- `types`: 原子の種類
+- `coords`: 原子の座標
+- `image_flags`: 周期境界条件のフラグ
 
-## ["atoms"]の中身とアクセスの仕方
-`snapshot["atoms"][idx_atom]`で、`idx_atom`番目の原子の情報にアクセスできる。
-例えば、lammpsのdump形式が
-`id x y z`である場合、
-```
-$ print(snapshot["atoms"][idx_atom])
-[id, x, y, z]
-```
-と返ってくる。
-つまり、このとき座標にアクセスしたければ、
-```
-$ print(snapshot["atoms"][idx_atom][1:4])
-```
-とすればよい。
+## 速度
+`ITEM: ATOMS id mol x y z ix iy iz` のファイルを読み込むのに、4.46フレーム/秒くらいの速度である。
+ちょっと遅いかもしれないが、まあ、許容範囲かな。
+型判定が多くなるやり方なので、もう少し高速化する方法があるかもしれない。
 
-dump形式によって、アクセスするインデックスが異なるので、注意。
-将来的には、`snapshot["adoms"][id_atoms]["x"]`みたいな感じで自動的にパースするようにしたい。
-やる気が出たら。
