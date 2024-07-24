@@ -27,7 +27,7 @@ module lammpsIO
         integer :: timestep
         integer :: nparticles
         double precision :: box_bounds(3, 3) = 0.0d0
-        double precision, allocatable :: coords(:, :)
+        REAL, allocatable :: coords(:, :)
         integer, allocatable :: image_flags(:, :)
         integer, allocatable :: id(:)
         integer, allocatable :: mol(:)
