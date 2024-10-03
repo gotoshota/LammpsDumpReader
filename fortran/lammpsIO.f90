@@ -1,4 +1,4 @@
-module lammpsIO
+module lammpsio
     implicit none
 
     type :: AtomIndex
