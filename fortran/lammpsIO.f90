@@ -1,4 +1,4 @@
-module lammpsIO
+module lammpsio
     implicit none
 
     type :: AtomIndex
@@ -27,7 +27,11 @@ module lammpsIO
         integer :: timestep
         integer :: nparticles
         double precision :: box_bounds(3, 3) = 0.0d0
+<<<<<<< HEAD
         REAL, allocatable :: coords(:, :)
+=======
+        real, allocatable :: coords(:, :)
+>>>>>>> develop
         integer, allocatable :: image_flags(:, :)
         integer, allocatable :: id(:)
         integer, allocatable :: mol(:)
