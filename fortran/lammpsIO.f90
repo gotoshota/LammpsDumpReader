@@ -226,5 +226,27 @@ contains
         end if
     end function split_line
 
+    subroutine write_lammpstrj(this, filename)
+        character(len=*), intent(in) :: filename
+        real, dimension(3, :), intent(in) :: coords
+        real, dimension(3, 2), intent(in) :: box_bounds
+        integer, intent(in) :: timestep, nparticles
+        integer, dimension(:), intent(in), optional :: id, mol, type
+        integer, dimension(3, :), intent(in), optional :: image_flags
+        integer :: ios, i, j
+        character(len=256) :: line
+
+        open(newunit=10, file=filename, status='replace', action='write', iostat=ios)
+        if (ios /= 0) then
+            print *, "Error opening file: ", filename
+            stop
+        end if
+
+        write(10, '(A)') "ITEM: TIMESTEP"
+        write(10, '(I10)') timestep
+        write(10, '(A)') "ITEM: NUMBER OF ATOMS"
+        write(10, '(I10)') nparticles
+        write(10, '(A)') "ITEM: BOX BOUNDS
+
 end module lammpsIO
 
