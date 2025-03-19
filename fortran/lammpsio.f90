@@ -414,4 +414,58 @@ contains
         end do
     end subroutine write_lammpstrj
 
+
+!> @brief 座標データをwrapするサブルーチン
+subroutine wrap_coordinates(this, wrapped)
+    class(lammpstrj), intent(inout) :: this
+    real, allocatable, intent(out) :: wrapped(:,:)
+    integer :: i, j, np
+    real :: L, lower, upper
+
+    if (.not. allocated(this%coords)) then
+        print *, "Error: coords is not allocated."
+        stop 1
+    end if
+    np = size(this%coords, 2)
+    allocate(wrapped(3, np))
+    if (.not. allocated(this%image_flags)) then
+        allocate(this%image_flags(3, np))
+    end if
+
+    do i = 1, 3
+        lower = this%box_bounds(i, 1)
+        upper = this%box_bounds(i, 2)
+        L = upper - lower
+        do j = 1, np
+            this%image_flags(i, j) = int(floor((this%coords(i, j) - lower)/L))
+            wrapped(i, j) = this%coords(i, j) - this%image_flags(i, j)*L
+        end do
+    end do
+end subroutine wrap_coordinates
+
+
+!> @brief 座標データをunwrapするサブルーチン
+subroutine unwrap_coordinates(this, unwrapped)
+    class(lammpstrj), intent(inout) :: this
+    real, allocatable, intent(out) :: unwrapped(:,:)
+    integer :: i, j, np
+    real :: L, lower, upper
+
+    if (.not. allocated(this%image_flags)) then
+        print *, "Error: image_flags が定義されていません。unwrapできません。"
+        stop 1
+    end if
+    np = size(this%coords, 2)
+    allocate(unwrapped(3, np))
+
+    do i = 1, 3
+        lower = this%box_bounds(i, 1)
+        upper = this%box_bounds(i, 2)
+        L = upper - lower
+        do j = 1, np
+            unwrapped(i, j) = this%coords(i, j) + this%image_flags(i, j)*L
+        end do
+    end do
+end subroutine unwrap_coordinates
+
 end module lammpsio
