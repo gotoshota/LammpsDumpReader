@@ -13,6 +13,48 @@ import numpy as np
 import math
 
 
+class CoordinatesWrapper:
+    def __init__(self, parent):
+        self.parent = parent
+
+    def __array__(self):
+        return self.parent._coords
+
+    def __repr__(self):
+        return repr(self.parent._coords)
+
+    def __getitem__(self, key):
+        return self.parent._coords[key]
+
+    def __setitem__(self, key, value):
+        self.parent._coords[key] = value
+
+    def wrap(self):
+        if self.parent.box_bounds is None:
+            raise ValueError("box_bounds is not defined")
+        import numpy as np
+        bounds = self.parent.box_bounds
+        coords = self.parent._coords
+        lower = bounds[:, 0]
+        upper = bounds[:, 1]
+        L = upper - lower
+        computed_flags = np.floor((coords - lower[:, None]) / L[:, None]).astype(int)
+        wrapped = coords - computed_flags * L[:, None]
+        self.parent.image_flags = computed_flags
+        return wrapped
+
+    def unwrap(self):
+        if self.parent.image_flags is None:
+            raise ValueError("Cannot unwrap coordinate: image_flags is not available")
+        import numpy as np
+        bounds = self.parent.box_bounds
+        coords = self.parent._coords
+        lower = bounds[:, 0]
+        upper = bounds[:, 1]
+        L = upper - lower
+        unwrapped = coords + self.parent.image_flags * L[:, None]
+        return unwrapped
+
 class AtomIndex:
     """
     @brief LAMMPSダンプファイル内の各カラム（id, x, y, z など）の位置情報を保持するクラス
@@ -60,17 +102,24 @@ class lammpstrj:
         self.timestep = None      #!< 現在のタイムステップ
         self.nparticles = None    #!< 粒子数（Fortranでのnparticles）
         self.box_bounds = None    #!< シミュレーションボックスの境界 (3,3)のnumpy配列
-        self.coords = None        #!< 座標データ (3, nparticles)のnumpy配列
+        self._coords = None        #!< 座標データ (3, nparticles)のnumpy配列
         self.image_flags = None   #!< イメージフラグ (3, nparticles)のnumpy配列
         self.id = None            #!< 原子ID (nparticles)のnumpy配列
         self.mol = None           #!< 分子ID (nparticles)のnumpy配列
         self.type = None          #!< 原子タイプ (nparticles)のnumpy配列
         self.atom_idx = AtomIndex() #!< カラムインデックス情報
     
+    @property
+    def coords(self):
+        if self._coords is None:
+            return None
+        return CoordinatesWrapper(self)
+
     def open(self, filename, mode='read'):
         """
         @brief トラジェクトリファイルを開きます
         @param filename 開くファイル名
+
         @param mode オプションのファイルモード ('read', 'write', 'append')
         @exception ValueError 不明なモードが指定された場合
         """
@@ -182,7 +231,7 @@ class lammpstrj:
                 self.has_atom_idx = True
                 
                 # 必要な配列を確保
-                self.coords = np.zeros((3, self.nparticles))
+                self._coords = np.zeros((3, self.nparticles))
                 if self.atom_idx.id > 0:
                     self.id = np.zeros(self.nparticles, dtype=int)
                 if self.atom_idx.mol > 0:
