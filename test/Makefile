@@ -8,7 +8,7 @@ TESTDIR = .
 DATADIR = ../data
 
 # ソースファイルとオブジェクトファイル
-SRC = $(SRCDIR)/lammpsIO.f90
+SRC = $(SRCDIR)/lammpsio.f90
 
 # テストプログラム
 TEST_SRC = $(TESTDIR)/main.f90
