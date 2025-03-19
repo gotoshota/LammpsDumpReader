@@ -1,125 +1,393 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+@file lammpsIO.py
+@brief LAMMPSトラジェクトリファイルの読み込みと書き込みを行うモジュール
+@details このモジュールはLAMMPSの分子動力学シミュレーションの出力ファイル（dump形式）を
+読み込み、処理、書き込みするための機能を提供します。lammpsio.f90のPython実装版です。
+@author 開発者名
+@date 作成日
+"""
+
 import numpy as np
+import math
 
 
-class lammpstrjReader:
-    def __init__(self, filename):
+class AtomIndex:
+    """
+    @brief LAMMPSダンプファイル内の各カラム（id, x, y, z など）の位置情報を保持するクラス
+    @details LAMMPSダンプファイル内の各カラム（原子ID、座標、イメージフラグなど）の
+    位置情報を保持します。カラムのインデックスは0から始まります。
+    """
+    def __init__(self):
+        """
+        @brief AtomIndexオブジェクトを初期化します
+        @details 全てのインデックスは0で初期化されます
+        """
+        self.id = 0    #!< 原子IDのカラムインデックス
+        self.mol = 0   #!< 分子IDのカラムインデックス
+        self.type = 0  #!< 原子タイプのカラムインデックス
+        self.xu = 0    #!< アンラップしたx座標のカラムインデックス
+        self.yu = 0    #!< アンラップしたy座標のカラムインデックス
+        self.zu = 0    #!< アンラップしたz座標のカラムインデックス
+        self.x = 0     #!< x座標のカラムインデックス
+        self.y = 0     #!< y座標のカラムインデックス
+        self.z = 0     #!< z座標のカラムインデックス
+        self.ix = 0    #!< xイメージフラグのカラムインデックス
+        self.iy = 0    #!< yイメージフラグのカラムインデックス
+        self.iz = 0    #!< zイメージフラグのカラムインデックス
+        self.xs = 0    #!< スケーリングされたx座標のカラムインデックス
+        self.ys = 0    #!< スケーリングされたy座標のカラムインデックス
+        self.zs = 0    #!< スケーリングされたz座標のカラムインデックス
+
+
+class lammpstrj:
+    """
+    @brief LAMMPSトラジェクトリデータを管理する基本クラス
+    @details トラジェクトリファイルの読み込みと書き込み機能を提供する親クラスです。
+    このクラスは直接使用せず、lammpstrjReaderかlammpstrjWriterを使用してください。
+    """
+    def __init__(self):
+        """
+        @brief lammpstrjオブジェクトを初期化します
+        @details 全てのフィールドが初期化され、後で値が設定されます
+        """
+        self.filename = None      #!< ファイル名 
+        self.file = None          #!< ファイルオブジェクト
+        self.end_of_file = False  #!< EOFフラグ
+        self.has_atom_idx = False #!< 原子インデックスが初期化されているかのフラグ
+        self.is_writing = False   #!< 書き込みモードフラグ
+        self.timestep = None      #!< 現在のタイムステップ
+        self.nparticles = None    #!< 粒子数（Fortranでのnparticles）
+        self.box_bounds = None    #!< シミュレーションボックスの境界 (3,3)のnumpy配列
+        self.coords = None        #!< 座標データ (3, nparticles)のnumpy配列
+        self.image_flags = None   #!< イメージフラグ (3, nparticles)のnumpy配列
+        self.id = None            #!< 原子ID (nparticles)のnumpy配列
+        self.mol = None           #!< 分子ID (nparticles)のnumpy配列
+        self.type = None          #!< 原子タイプ (nparticles)のnumpy配列
+        self.atom_idx = AtomIndex() #!< カラムインデックス情報
+    
+    def open(self, filename, mode='read'):
+        """
+        @brief トラジェクトリファイルを開きます
+        @param filename 開くファイル名
+        @param mode オプションのファイルモード ('read', 'write', 'append')
+        @exception ValueError 不明なモードが指定された場合
+        """
         self.filename = filename
-        self.file = open(filename, "r")
-        self.end_of_file = False
-        self.num_columns = None
-        self.timestep = None
-        self.num_atoms = None
-        self.box_bounds = None
-        self.atom_data_labels = None
-        self.coords = None
-        self.image_flags = None
-        self.mol = None
-        self.type = None
-
-    def __del__(self):
+        
+        if mode == 'read':
+            self.is_writing = False
+            self.file = open(filename, 'r')
+        elif mode == 'write':
+            self.is_writing = True
+            self.file = open(filename, 'w')
+        elif mode == 'append':
+            self.is_writing = True
+            self.file = open(filename, 'a')
+        else:
+            raise ValueError(f"エラー: 不明なモードです: {mode}")
+    
+    def close(self):
+        """
+        @brief トラジェクトリファイルを閉じます
+        @details ファイルが開かれている場合、それを閉じてNoneに設定します
+        """
         if self.file:
             self.file.close()
-
-    def read_next_frame(self):
+            self.file = None
+    
+    def __del__(self):
+        """
+        @brief オブジェクトが削除されるときにファイルを閉じます
+        @details デストラクタはガベージコレクション時に呼ばれます
+        """
+        self.close()
+    
+    def read(self):
+        """
+        @brief トラジェクトリファイルから次のフレームを読み込みます
+        @details ファイルから次のタイムステップのデータを読み込み、クラスのフィールドを更新します。
+        これには粒子の座標、イメージフラグ、各種IDなどが含まれます。
+        @exception Exception ファイル読み込み中にエラーが発生した場合
+        """
+        if self.is_writing:
+            print("エラー: このトラジェクトリは書き込みモードのため読み込めません")
+            return
+        
         if self.end_of_file:
-            return None
-
+            return
+        
         try:
             line = self.file.readline()
             if not line:
                 self.end_of_file = True
-                return None
+                return
+            
+            # タイムステップを読み込み
             self.timestep = int(self.file.readline().strip())
+            
+            # 粒子数を読み込み
             self.file.readline()  # ITEM: NUMBER OF ATOMS
-            self.num_atoms = int(self.file.readline().strip())
+            self.nparticles = int(self.file.readline().strip())
+            
+            # ボックス境界を読み込み
             self.file.readline()  # ITEM: BOX BOUNDS
-            # self.box_bounds = np.array([self.file.readline().strip().split() for _ in range(3)], dtype=float)
-            self.box_bounds = np.array(
-                [
-                    list(map(float, self.file.readline().strip().split()))
-                    for _ in range(3)
-                ]
-            )
+            self.box_bounds = np.array([
+                list(map(float, self.file.readline().strip().split())) for _ in range(3)
+            ])
+            
+            # ATOMS行を読み込み、カラム情報を解析
             line = self.file.readline()  # ITEM: ATOMS
-
-            # ITEM: ATOMS 行からカラム名を読み込み
-            labels_line = line.strip()
-            self.atom_data_labels = labels_line.split()
-            # ITEM:, ATOMS は除く
-            self.atom_data_labels = self.atom_data_labels[2:]
-            self.num_columns = len(self.atom_data_labels)
-
-            # データの初期化
-            self.coords = np.zeros((self.num_atoms, 3))
-            self.image_flags = np.zeros((self.num_atoms, 3), dtype=int)
-            # データの読み込み
-            for i in range(self.num_atoms):
-                atom_data = self.file.readline().strip().split()
-
-                if len(atom_data) != self.num_columns:
-                    raise ValueError(
-                        f"Expected {self.num_columns} columns, but got {len(atom_data)}"
-                    )
-
-                # 各カラムに基づいて適切な型に変換
-                parsed_data = []
-                for label, value in zip(self.atom_data_labels, atom_data):
-                    if label in ["id", "mol"]:  # ここでは'id'や'mol'は整数として処理
-                        parsed_data.append(int(value))
-                    else:  # その他のデータは浮動小数点数として処理
-                        parsed_data.append(float(value))
-
-                parsed_data = np.array(parsed_data)  # NumPy配列に変換
-
-                # カラム名に基づいてデータを格納
-                if "x" in self.atom_data_labels:
-                    x_index = self.atom_data_labels.index("x")
-                    self.coords[i, 0] = atom_data[x_index]
-                if "y" in self.atom_data_labels:
-                    y_index = self.atom_data_labels.index("y")
-                    self.coords[i, 1] = atom_data[y_index]
-                if "z" in self.atom_data_labels:
-                    z_index = self.atom_data_labels.index("z")
-                    self.coords[i, 2] = atom_data[z_index]
-                if "xu" in self.atom_data_labels:
-                    xu_index = self.atom_data_labels.index("xu")
-                    self.coords[i, 0] = atom_data[xu_index]
-                if "yu" in self.atom_data_labels:
-                    yu_index = self.atom_data_labels.index("yu")
-                    self.coords[i, 1] = atom_data[yu_index]
-                if "zu" in self.atom_data_labels:
-                    zu_index = self.atom_data_labels.index("zu")
-                    self.coords[i, 2] = atom_data[zu_index]
-                if "ix" in self.atom_data_labels:
-                    ix_index = self.atom_data_labels.index("ix")
-                    self.image_flags[i, 0] = int(atom_data[ix_index])
-                if "iy" in self.atom_data_labels:
-                    iy_index = self.atom_data_labels.index("iy")
-                    self.image_flags[i, 1] = int(atom_data[iy_index])
-                if "iz" in self.atom_data_labels:
-                    iz_index = self.atom_data_labels.index("iz")
-                    self.image_flags[i, 2] = int(atom_data[iz_index])
-                if "mol" in self.atom_data_labels:
-                    mol_index = self.atom_data_labels.index("mol")
-                    self.mol = int(atom_data[mol_index])
-                if "type" in self.atom_data_labels:
-                    type_index = self.atom_data_labels.index("type")
-                    self.type = int(atom_data[type_index])
-
-            return {
-                "timestep": self.timestep,
-                "num_atoms": self.num_atoms,
-                "box_bounds": self.box_bounds,
-                "coords": self.coords,
-                "image_flags": self.image_flags,
-            }
+            
+            if not self.has_atom_idx:
+                # カラム情報を解析
+                atom_header_parts = line.strip().split()
+                # "ITEM:" と "ATOMS" をスキップ
+                ncols = len(atom_header_parts) - 2
+                
+                for i in range(ncols):
+                    col_name = atom_header_parts[i + 2].strip()
+                    if col_name == "id":
+                        self.atom_idx.id = i
+                    elif col_name == "mol":
+                        self.atom_idx.mol = i
+                    elif col_name == "type":
+                        self.atom_idx.type = i
+                    elif col_name == "xu":
+                        self.atom_idx.xu = i
+                    elif col_name == "yu":
+                        self.atom_idx.yu = i
+                    elif col_name == "zu":
+                        self.atom_idx.zu = i
+                    elif col_name == "x":
+                        self.atom_idx.x = i
+                    elif col_name == "y":
+                        self.atom_idx.y = i
+                    elif col_name == "z":
+                        self.atom_idx.z = i
+                    elif col_name == "ix":
+                        self.atom_idx.ix = i
+                    elif col_name == "iy":
+                        self.atom_idx.iy = i
+                    elif col_name == "iz":
+                        self.atom_idx.iz = i
+                    elif col_name == "xs":
+                        self.atom_idx.xs = i
+                    elif col_name == "ys":
+                        self.atom_idx.ys = i
+                    elif col_name == "zs":
+                        self.atom_idx.zs = i
+                
+                self.has_atom_idx = True
+                
+                # 必要な配列を確保
+                self.coords = np.zeros((3, self.nparticles))
+                if self.atom_idx.id > 0:
+                    self.id = np.zeros(self.nparticles, dtype=int)
+                if self.atom_idx.mol > 0:
+                    self.mol = np.zeros(self.nparticles, dtype=int)
+                if self.atom_idx.type > 0:
+                    self.type = np.zeros(self.nparticles, dtype=int)
+                if self.atom_idx.ix > 0:
+                    self.image_flags = np.zeros((3, self.nparticles), dtype=int)
+            
+            # 粒子データを読み込み
+            for i in range(self.nparticles):
+                line = self.file.readline()
+                parts = line.strip().split()
+                
+                # 座標の読み込み
+                if self.atom_idx.x > 0:
+                    self.coords[0, i] = float(parts[self.atom_idx.x])
+                elif self.atom_idx.xu > 0:
+                    self.coords[0, i] = float(parts[self.atom_idx.xu])
+                elif self.atom_idx.xs > 0:
+                    self.coords[0, i] = float(parts[self.atom_idx.xs])
+                
+                if self.atom_idx.y > 0:
+                    self.coords[1, i] = float(parts[self.atom_idx.y])
+                elif self.atom_idx.yu > 0:
+                    self.coords[1, i] = float(parts[self.atom_idx.yu])
+                elif self.atom_idx.ys > 0:
+                    self.coords[1, i] = float(parts[self.atom_idx.ys])
+                
+                if self.atom_idx.z > 0:
+                    self.coords[2, i] = float(parts[self.atom_idx.z])
+                elif self.atom_idx.zu > 0:
+                    self.coords[2, i] = float(parts[self.atom_idx.zu])
+                elif self.atom_idx.zs > 0:
+                    self.coords[2, i] = float(parts[self.atom_idx.zs])
+                
+                # ID, mol, type の読み込み
+                if self.atom_idx.id > 0 and self.id is not None:
+                    self.id[i] = int(parts[self.atom_idx.id])
+                if self.atom_idx.mol > 0 and self.mol is not None:
+                    self.mol[i] = int(parts[self.atom_idx.mol])
+                if self.atom_idx.type > 0 and self.type is not None:
+                    self.type[i] = int(parts[self.atom_idx.type])
+                
+                # イメージフラグの読み込み
+                if self.atom_idx.ix > 0 and self.image_flags is not None:
+                    self.image_flags[0, i] = int(parts[self.atom_idx.ix])
+                if self.atom_idx.iy > 0 and self.image_flags is not None:
+                    self.image_flags[1, i] = int(parts[self.atom_idx.iy])
+                if self.atom_idx.iz > 0 and self.image_flags is not None:
+                    self.image_flags[2, i] = int(parts[self.atom_idx.iz])
+        
         except Exception as e:
             print(f"Error reading file: {e}")
             self.end_of_file = True
-            return None
+    
+    def write(self):
+        """
+        @brief トラジェクトリデータをファイルに書き込みます
+        @details 現在のフレームデータをLAMMPS形式でファイルに書き込みます。
+        タイムステップ、粒子数、ボックス境界、各粒子のデータが含まれます。
+        """
+        if not self.is_writing:
+            print("エラー: このトラジェクトリは読み込みモードのため書き込めません")
+            return
+        
+        # タイムステップ情報を書き込み
+        self.file.write("ITEM: TIMESTEP\n")
+        self.file.write(f"{self.timestep}\n")
+        
+        # 粒子数を書き込み
+        self.file.write("ITEM: NUMBER OF ATOMS\n")
+        self.file.write(f"{self.nparticles}\n")
+        
+        # ボックス境界情報を書き込み
+        self.file.write("ITEM: BOX BOUNDS pp pp pp\n")
+        for i in range(3):
+            bounds = " ".join(map(str, self.box_bounds[i, :]))
+            self.file.write(f"{bounds}\n")
+        
+        # 原子データのヘッダーを書き込み
+        header = "ITEM: ATOMS id"
+        if self.type is not None:
+            header += " type"
+        if self.mol is not None:
+            header += " mol"
+        header += " x y z"
+        if self.image_flags is not None:
+            header += " ix iy iz"
+        self.file.write(f"{header}\n")
+        
+        # 各原子のデータを書き込み
+        for i in range(self.nparticles):
+            line = ""
+            
+            # ID を書き込み (必須)
+            if self.id is not None:
+                line += f"{self.id[i]} "
+            else:
+                line += f"{i+1} "  # IDがない場合は位置を使用
+            
+            # タイプを書き込み (オプション)
+            if self.type is not None:
+                line += f"{self.type[i]} "
+            
+            # 分子 ID を書き込み (オプション)
+            if self.mol is not None:
+                line += f"{self.mol[i]} "
+            
+            # 座標を書き込み (必須)
+            line += f"{self.coords[0, i]} {self.coords[1, i]} {self.coords[2, i]}"
+            
+            # イメージフラグを書き込み (オプション)
+            if self.image_flags is not None:
+                line += f" {self.image_flags[0, i]} {self.image_flags[1, i]} {self.image_flags[2, i]}"
+            
+            self.file.write(f"{line}\n")
+
+
+class lammpstrjReader(lammpstrj):
+    """
+    @brief 読み込み専用のLAMMPSトラジェクトリ管理クラス
+    @details lammpstrjを継承し、読み込み機能に特化した子クラスです。
+    LAMMPSトラジェクトリファイルを読み込むために使用します。
+    """
+    def __init__(self, filename=None):
+        """
+        @brief lammpstrjReaderオブジェクトを初期化します
+        @param filename オプションのファイル名。指定された場合、そのファイルが開かれます
+        """
+        super().__init__()
+        if filename:
+            self.open(filename)
+    
+    def open(self, filename, mode='read'):
+        """
+        @brief 読み込み専用でトラジェクトリファイルを開きます
+        @param filename 開くファイル名
+        @param mode 無視されるパラメータ（互換性のために残されています）
+        @details modeパラメータは無視され、常に'read'モードでファイルを開きます
+        """
+        super().open(filename, 'read')  # 常に読み込みモードで開く
+    
+    def read_next_frame(self):
+        """
+        @brief 次のフレームを読み込みます（旧バージョンとの互換性のためのメソッド）
+        @return self.read()の戻り値
+        @details 旧バージョンとの互換性のために提供されているメソッドです。
+        内部的にはread()メソッドを呼び出します。
+        """
+        return self.read()
+
+
+class lammpstrjWriter(lammpstrj):
+    """
+    @brief 書き込み専用のLAMMPSトラジェクトリ管理クラス
+    @details lammpstrjを継承し、書き込み機能に特化した子クラスです。
+    LAMMPSトラジェクトリファイルを作成または追記するために使用します。
+    """
+    def __init__(self):
+        """
+        @brief lammpstrjWriterオブジェクトを初期化します
+        """
+        super().__init__()
+    
+    def open(self, filename, mode='write'):
+        """
+        @brief 書き込み専用でトラジェクトリファイルを開きます
+        @param filename 開くファイル名
+        @param mode オプションのファイルモード ('write'または'append')
+        @details 'read'モードが指定された場合、警告を出力して'write'モードに変更します
+        """
+        if mode == 'read':
+            print("警告: Writerは読み込みモードではオープンできません。書き込みモードに変更します。")
+            mode = 'write'
+        
+        super().open(filename, mode)
+    
+    def create(self, filename):
+        """
+        @brief 新規書き込み用のトラジェクトリファイルを作成します
+        @param filename 作成するファイル名
+        @details 既存のファイルがある場合は上書きされます
+        """
+        self.open(filename, 'write')
+    
+    def append(self, filename):
+        """
+        @brief 既存のトラジェクトリファイルに追記するために開きます
+        @param filename 追記するファイル名
+        @details 指定したファイルが存在しない場合は新規作成されます
+        """
+        self.open(filename, 'append')
 
 
 def write_lammpstrj(filename, coords, box_bounds, image_flags=None):
+    """
+    @brief シンプルなヘルパー関数：LAMMPSトラジェクトリファイルを書き込みます
+    @param filename 出力ファイル名
+    @param coords 座標データ（N, 3）のnumpy配列
+    @param box_bounds ボックス境界（3, 2）または（3, 3）のnumpy配列
+    @param image_flags オプションのイメージフラグ（N, 3）のnumpy配列
+    @details この関数はシンプルなヘルパー関数で、lammpstrjWriterクラスを使わずに
+    直接ファイルに書き込みます。タイムステップは0に設定されます。
+    """
     with open(filename, "w") as f:
         f.write("ITEM: TIMESTEP\n")
         f.write("0\n")
@@ -370,7 +638,6 @@ class LammpsData:
                     )
                     self.atoms.image_flag.append(
                         (float(parts[6]), float(parts[7]), float(parts[8]))
-                    )
             elif current_section == "Masses":
                 if len(parts) >= 2:
                     self.masses.id.append(int(parts[0]))
@@ -563,23 +830,118 @@ if __name__ == "__main__":
     # 使用例
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", type=str, required=True)
+    parser.add_argument("--output", type=str, help="出力ファイル名（指定すると書き込みテストも実行）")
+    parser.add_argument("--mol_id", type=int, default=None, help="指定したmol_idの粒子だけを書き出し")
 
     args = parser.parse_args()
-    lmp = lammpstrjReader(args.input)
+    
+    # トラジェクトリの読み込みテスト
+    print(f"入力ファイル: {args.input} の読み込みテスト")
+    reader = lammpstrjReader(args.input)
 
     ts = time.time()
     nframes = 0
+    
+    # 書き込みテスト用の設定
+    writer = None
+    if args.output:
+        print(f"出力ファイル: {args.output} への書き込みテスト")
+        writer = lammpstrjWriter()
+        writer.create(args.output)
+    
+    # 全フレームを処理
     while True:
-        lmp.read_next_frame()
-        if lmp.end_of_file:
+        reader.read()
+        if reader.end_of_file:
             break
+        
         # フレームごとの処理
-        print(f"Timestep: {lmp.timestep}, Number of atoms: {lmp.num_atoms}")
-        if lmp.coords is not None:
-            print(f"coords: {lmp.coords[1, :]}")
-            print(f"image_flags: {lmp.image_flags[1, :]}")
+        print(f"Timestep: {reader.timestep}, Number of atoms: {reader.nparticles}")
+        if reader.coords is not None:
+            print(f"coords of atom 1: {reader.coords[:, 0]}")
+            if reader.image_flags is not None:
+                print(f"image_flags of atom 1: {reader.image_flags[:, 0]}")
+        
+        # 書き込みテスト
+        if writer:
+            if args.mol_id is not None and reader.mol is not None:
+                # 指定されたmol_idの粒子だけを抽出して書き出し
+                mol_mask = reader.mol == args.mol_id
+                count_mol = np.sum(mol_mask)
+                
+                if count_mol > 0:
+                    print(f"mol_id={args.mol_id}の粒子数: {count_mol}")
+                    
+                    # 新しいデータを作成
+                    writer.timestep = reader.timestep
+                    writer.nparticles = count_mol
+                    writer.box_bounds = reader.box_bounds
+                    
+                    # 必要な配列を割り当て
+                    if writer.coords is None or writer.coords.shape[1] != count_mol:
+                        writer.coords = np.zeros((3, count_mol))
+                    
+                    if reader.id is not None:
+                        if writer.id is None or len(writer.id) != count_mol:
+                            writer.id = np.zeros(count_mol, dtype=int)
+                    
+                    if reader.type is not None:
+                        if writer.type is None or len(writer.type) != count_mol:
+                            writer.type = np.zeros(count_mol, dtype=int)
+                    
+                    if reader.mol is not None:
+                        if writer.mol is None or len(writer.mol) != count_mol:
+                            writer.mol = np.zeros(count_mol, dtype=int)
+                    
+                    if reader.image_flags is not None:
+                        if writer.image_flags is None or writer.image_flags.shape[1] != count_mol:
+                            writer.image_flags = np.zeros((3, count_mol), dtype=int)
+                    
+                    # データをコピー
+                    new_idx = 0
+                    for i in range(reader.nparticles):
+                        if reader.mol[i] == args.mol_id:
+                            writer.coords[:, new_idx] = reader.coords[:, i]
+                            
+                            if reader.id is not None and writer.id is not None:
+                                writer.id[new_idx] = reader.id[i]
+                            
+                            if reader.type is not None and writer.type is not None:
+                                writer.type[new_idx] = reader.type[i]
+                            
+                            if reader.mol is not None and writer.mol is not None:
+                                writer.mol[new_idx] = reader.mol[i]
+                            
+                            if reader.image_flags is not None and writer.image_flags is not None:
+                                writer.image_flags[:, new_idx] = reader.image_flags[:, i]
+                            
+                            new_idx += 1
+                    
+                    # 書き込み
+                    writer.write()
+                else:
+                    print(f"mol_id={args.mol_id}の粒子がありません")
+            else:
+                # 全粒子を書き出し
+                writer.timestep = reader.timestep
+                writer.nparticles = reader.nparticles
+                writer.box_bounds = reader.box_bounds
+                writer.coords = reader.coords
+                writer.id = reader.id
+                writer.type = reader.type
+                writer.mol = reader.mol
+                writer.image_flags = reader.image_flags
+                
+                writer.write()
+        
         nframes += 1
+    
+    # ファイルを閉じる
+    reader.close()
+    if writer:
+        writer.close()
+        
     te = time.time()
-    print(f"Time: {te - ts}")
-    print(f"Number of frames: {nframes}")
-    print(f"read frames per second: {nframes / (te - ts)}")
+    print(f"処理時間: {te - ts:.2f}秒")
+    print(f"フレーム数: {nframes}")
+    print(f"1秒あたりの処理フレーム数: {nframes / (te - ts):.2f}")
