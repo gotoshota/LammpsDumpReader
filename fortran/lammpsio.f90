@@ -8,6 +8,9 @@ module lammpsio
     !> @brief 座標データを管理する型
     type :: coordinates
         real, allocatable :: coords(:, :)
+        logical :: is_wrapped = .false. !< ラップされた座標を保持しているかのフラグ
+        logical :: is_scaled = .false. !< スケーリングされた座標を保持しているかのフラグ
+        logical :: has_image_flags = .false. !< イメージフラグを保持しているかのフラグ
     contains
         procedure :: wrap => wrap_coordinates
         procedure :: unwrap => unwrap_coordinates
@@ -269,7 +272,10 @@ contains
             if (this%atom_idx%id > 0) allocate (this%id(this%nparticles))
             if (this%atom_idx%mol > 0) allocate (this%mol(this%nparticles))
             if (this%atom_idx%type > 0) allocate (this%type(this%nparticles))
-            if (this%atom_idx%ix > 0) allocate (this%image_flags(3, this%nparticles))
+            if (this%atom_idx%ix > 0) then
+                allocate (this%image_flags(3, this%nparticles))
+                this%coords%has_image_flags = .true.
+            end if
         end if
 
         if (.not. allocated(this%coords%coords)) then
@@ -452,22 +458,20 @@ contains
         class(lammpstrj), intent(inout) :: parent
         real, allocatable :: triclinic_coords(:, :)
         real, allocatable :: wrapped(:, :)
-        integer, allocatable :: image_flags(:, :)
+        integer(kind=8), allocatable :: image_flags(:, :)
         integer :: i, j, np
         double precision :: box_len(3), center(3)
         double precision :: triclinic_box_len(3), triclinic_center(3)
-        double precision :: h(3, 3), h_inv(3, 3), det
         double precision :: cos_theta, sin_theta ! for triclinic box tilted with direction x
         double precision :: disp(3)
-        real :: shifted(3), s_coords(3), s_wrapped(3)
         logical :: is_triclinic
 
         call get_box_info(parent%box_bounds, box_len, center)
         ! triclinic boxかどうかを判定（box_boundsの3列目に値があるかどうか）
         is_triclinic = .false.
-        if (abs(parent%box_bounds(1, 3)) > 1.0e-6 .or. &
-            abs(parent%box_bounds(2, 3)) > 1.0e-6 .or. &
-            abs(parent%box_bounds(3, 3)) > 1.0e-6) then
+        if (abs(parent%box_bounds(1, 3)) > 1.0e-8 .or. &
+            abs(parent%box_bounds(2, 3)) > 1.0e-8 .or. &
+            abs(parent%box_bounds(3, 3)) > 1.0e-8) then
             is_triclinic = .true.
         end if
 
@@ -481,6 +485,7 @@ contains
             image_flags = parent%image_flags
         else
             allocate (image_flags(3, np))
+            allocate (parent%image_flags(3, np))
         end if
 
         ! 傾いたボックスの場合
@@ -489,8 +494,11 @@ contains
             allocate (triclinic_coords(3, np))
             ! xy からせん断による歪みcos\theta を計算
             ! cos_theta = xy / sqrt(y^2 + xy^2)
-            cos_theta = parent%box_bounds(3, 1) / dsqrt(box_len(2)**2.0d0 + parent%box_bounds(3, 1)**2.0d0)
-            sin_theta = dsqrt(1.0d0 - cos_theta**2.0d0)
+            cos_theta = parent%box_bounds(3, 1) / sqrt(box_len(2)**2.0d0 + parent%box_bounds(3, 1)**2.0d0)
+            sin_theta = sqrt(1.0d0 - cos_theta**2.0d0)
+            print *, "cos_theta: ", cos_theta
+            print *, "sin_theta: ", sin_theta
+            print *, "box_bounds: ", parent%box_bounds(3, 1)
             ! y' = y / sin\theta
             triclinic_coords(2, :) = this%coords(2, :) / sin_theta
             ! x' = x - y' * cos\theta = x - y / tan\theta
@@ -498,34 +506,48 @@ contains
             ! z' = z
             triclinic_coords(3, :) = this%coords(3, :)
             triclinic_box_len(2) = box_len(2) / sin_theta
-            triclinic_box_len(1) = box_len(1) ! x軸はy=0のため変化なし
+            triclinic_box_len(1) = box_len(1) 
             triclinic_box_len(3) = box_len(3) 
             triclinic_center(2) = center(2) / sin_theta
             triclinic_center(1) = center(1) - triclinic_center(2) * cos_theta
             triclinic_center(3) = center(3)
 
             ! triclinic 座標系でwrap
-            if (.not. allocated(parent%image_flags)) then
-                allocate (parent%image_flags(3, np))
-            end if
-            do i = 1, size(this%coords, 2)
-                do j = 1, size(this%coords, 1)
-                    image_flags(j, i) = int( (triclinic_coords(j, i) - triclinic_center(j) + 0.5d0*triclinic_box_len(j)) / triclinic_box_len(j) )
-                    wrapped(j, i) = triclinic_coords(j, i) - triclinic_box_len(j) * image_flags(j, i)
+            if (.not. this%has_image_flags) then
+                print *, "compute image flags"
+                do i = 1, np
+                    disp = triclinic_coords(:, i) - triclinic_center
+                    do j =1, 3
+                        image_flags(j, i) = nint(disp(j) / triclinic_box_len(j))
+                        wrapped(j, i) = triclinic_coords(j, i) - triclinic_box_len(j) * image_flags(j, i)
+                    end do
                 end do
-            end do
-            parent%image_flags = image_flags
+                parent%image_flags = image_flags
+            else
+                do i = 1, np
+                    do j =1, 3
+                        wrapped(j, i) = triclinic_coords(j, i) - triclinic_box_len(j) * parent%image_flags(j, i)
+                    end do
+                end do
+            end if
             ! triclinic -> orthorhombic 座標系に変換
-            wrapped(2, :) = wrapped(2, :) * sin_theta
             wrapped(1, :) = wrapped(1, :) + wrapped(2, :) * cos_theta
+            wrapped(2, :) = wrapped(2, :) * sin_theta
         else
             ! 直交ボックスの場合（既存のコード）
             if (.not. allocated(parent%image_flags)) then
                 allocate (parent%image_flags(3, np))
-            end if
-            do i = 1, 3
                 do j = 1, np
-                    parent%image_flags(i, j) = int( (this%coords(i, j) - center(i) + 0.5d0*box_len(i)) / box_len(i) )
+                    disp = this%coords(:, j) - center
+                    do i = 1, 3
+                        parent%image_flags(i, j) = nint(disp(i) / box_len(i))
+                        wrapped(i, j) = this%coords(i, j) - box_len(i) * parent%image_flags(i, j)
+                    end do
+                end do
+            end if
+
+            do j = 1, np
+                do i = 1, 3
                     wrapped(i, j) = this%coords(i, j) - box_len(i) * parent%image_flags(i, j)
                 end do
             end do
@@ -622,10 +644,10 @@ contains
         box_size(1) = xhi - xlo
         box_size(2) = yhi - ylo
         box_size(3) = zhi - zlo
-        !center(1) = (box_bounds(1, 1) + box_bounds(2, 1))/2.0
-        !center(2) = (box_bounds(1, 2) + box_bounds(2, 2))/2.0
-        !center(3) = (box_bounds(1, 3) + box_bounds(2, 3))/2.0
-        center = [(xlo + xhi) / 2.0, (ylo + yhi) / 2.0, (zlo + zhi) / 2.0]
+        center(1) = (box_bounds(1, 1) + box_bounds(2, 1)) / 2.0
+        center(2) = (box_bounds(1, 2) + box_bounds(2, 2)) / 2.0
+        center(3) = (box_bounds(1, 3) + box_bounds(2, 3)) / 2.0
+
     end subroutine get_box_info
 
 end module lammpsio

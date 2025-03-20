@@ -12,7 +12,7 @@ SRC = $(SRCDIR)/lammpsio.f90
 
 # テストプログラム
 TEST_SRC = $(TESTDIR)/main.f90
-TEST_EXE = lampstrjReader
+TEST_EXE = test_fort
 
 # デフォルトターゲット
 all: $(TEST_EXE)
@@ -24,6 +24,7 @@ $(TEST_EXE): $(TEST_SRC)
 # クリーンアップ
 clean:
 	rm -f $(OBJ) $(MOD) $(TEST_EXE)
+	rm -f $(SRCDIR)/*.mod $(TESTDIR)/*.mod $(SRCDIR)/*.o
 
 # ファイルの実行
 run: $(TEST_EXE)

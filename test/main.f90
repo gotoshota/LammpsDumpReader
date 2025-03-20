@@ -64,6 +64,10 @@ program test_lammpstrj
 
         ! 書き込みテスト
         if (test_write) then
+            writer%timestep = reader%timestep
+            writer%nparticles = reader%nparticles
+            writer%box_bounds = reader%box_bounds
+
 
             ! 配列データのコピー（全粒子）
             if (.not. allocated(writer%coords%coords)) then
@@ -110,13 +114,18 @@ program test_lammpstrj
                 if (allocated(reader%type))  writer%type(j)  = reader%type(j)
                 if (allocated(reader%mol))   writer%mol(j)   = reader%mol(j)
                 if (allocated(reader%image_flags)) then
+                    if (.not. allocated(writer%image_flags)) then
+                        allocate(writer%image_flags(3, reader%nparticles))
+                    end if
                     writer%image_flags(:, j) = reader%image_flags(:, j)
                 end if
             end do
             
             ! 書き込み時間を計測
             call system_clock(start_time)
+            print *, writer%coords%coords(:, 1)
             call writer%write()
+            print *, writer%coords%coords(:, 1)
             call system_clock(end_time)
             write_time = write_time + (end_time - start_time)
         end if
