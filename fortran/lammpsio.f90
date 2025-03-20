@@ -507,21 +507,14 @@ contains
             ! triclinic 座標系でwrap
             if (.not. allocated(parent%image_flags)) then
                 allocate (parent%image_flags(3, np))
-                do i = 1, size(this%coords, 2)
-                    do j =1, size(this%coords, 1)
-                        disp(j) = triclinic_coords(j, i) - triclinic_center(j)
-                        image_flags(j, i) = nint(disp(j) / triclinic_box_len(j))
-                        wrapped(j, i) = triclinic_coords(j, i) - triclinic_box_len(j) * image_flags(j, i)
-                    end do
-                end do
-                parent%image_flags = image_flags
-            else
-                do i = 1, size(this%coords, 2)
-                    do j =1, 3
-                        wrapped(j, i) = triclinic_coords(j, i) - triclinic_box_len(j) * parent%image_flags(j, i)
-                    end do
-                end do
             end if
+            do i = 1, size(this%coords, 2)
+                do j = 1, size(this%coords, 1)
+                    image_flags(j, i) = int( (triclinic_coords(j, i) - triclinic_center(j) + 0.5d0*triclinic_box_len(j)) / triclinic_box_len(j) )
+                    wrapped(j, i) = triclinic_coords(j, i) - triclinic_box_len(j) * image_flags(j, i)
+                end do
+            end do
+            parent%image_flags = image_flags
             ! triclinic -> orthorhombic 座標系に変換
             wrapped(2, :) = wrapped(2, :) * sin_theta
             wrapped(1, :) = wrapped(1, :) + wrapped(2, :) * cos_theta
@@ -529,17 +522,10 @@ contains
             ! 直交ボックスの場合（既存のコード）
             if (.not. allocated(parent%image_flags)) then
                 allocate (parent%image_flags(3, np))
-                do i = 1, 3
-                    do j = 1, np
-                        disp(j) = this%coords(i, j) - center(i)
-                        parent%image_flags(i, j) = nint(disp(j) / box_len(i))
-                        wrapped(i, j) = this%coords(i, j) - box_len(i) * parent%image_flags(i, j)
-                    end do
-                end do
             end if
-
             do i = 1, 3
                 do j = 1, np
+                    parent%image_flags(i, j) = int( (this%coords(i, j) - center(i) + 0.5d0*box_len(i)) / box_len(i) )
                     wrapped(i, j) = this%coords(i, j) - box_len(i) * parent%image_flags(i, j)
                 end do
             end do
