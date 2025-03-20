@@ -13,9 +13,12 @@ program test_lammpstrj
     integer :: start_time, end_time, read_time, write_time, clock_rate
     logical :: test_write = .true. !< 書き込みテストを行うフラグ
     integer :: count_mol1, j, new_idx !< mol_id = 1のフィルタリングのための変数
+    real, allocatable :: wrapped(:,:) !< ラップされた座標用の一時配列
+
+    integer :: debug_i = 0
     
     ! テスト用のファイル名を指定します。適宜変更してください。
-    input_filename = "../data/dump.lammpstrj"
+    input_filename = "../data/triclinic.lammpstrj"
     output_filename = "../data/output.lammpstrj"
 
     ! 読み込み用ファイルを開く
@@ -54,7 +57,7 @@ program test_lammpstrj
 
         ! サンプルとして10番目の粒子の座標を表示
         if (reader%nparticles >= 10) then
-            print *, "Coords of particle 10: ", reader%coords(:, 10)
+            print *, "Coords of particle 10: ", reader%coords%data(:, 10)
             if (allocated(reader%id)) print *, "ID of particle 10: ", reader%id(10)
             if (allocated(reader%type)) print *, "Type of particle 10: ", reader%type(10)
         end if
@@ -79,11 +82,11 @@ program test_lammpstrj
             writer%box_bounds = reader%box_bounds
             
             ! 配列データのコピー（mol_id = 1の粒子のみ）
-            if (.not. allocated(writer%coords)) then
-                allocate(writer%coords(3, count_mol1))
-            else if (size(writer%coords, 2) /= count_mol1) then
-                deallocate(writer%coords)
-                allocate(writer%coords(3, count_mol1))
+            if (.not. allocated(writer%coords%data)) then
+                allocate(writer%coords%data(3, count_mol1))
+            else if (size(writer%coords%data, 2) /= count_mol1) then
+                deallocate(writer%coords%data)
+                allocate(writer%coords%data(3, count_mol1))
             end if
             
             ! その他の配列も必要に応じて再割り当て
@@ -120,7 +123,16 @@ program test_lammpstrj
             do j = 1, reader%nparticles
                 if (.not. allocated(reader%mol) .or. reader%mol(j) == 1) then
                     new_idx = new_idx + 1
-                    writer%coords(:, new_idx) = reader%coords(:, j)
+                    !writer%coords%data(:, new_idx) = reader%coords%data(:, j)
+                    ! Use the wrapped coordinates
+                    if (.not. allocated(wrapped)) then
+                        allocate(wrapped(3, reader%nparticles))
+                    end if
+                    wrapped = reader%coords%wrap(reader)
+                    writer%coords%data(:, new_idx) = wrapped(:, j)
+                    if (.not. allocated(writer%image_flags)) then
+                        allocate(writer%image_flags(3, count_mol1))
+                    end if
                     
                     if (allocated(reader%id)) writer%id(new_idx) = reader%id(j)
                     if (allocated(reader%type)) writer%type(new_idx) = reader%type(j)
@@ -162,5 +174,12 @@ program test_lammpstrj
         print *, "Output file: ", trim(output_filename)
     end if
 
+contains
+    subroutine debug_print(i)
+        integer, intent(inout) :: i
+
+        print *, "Debug: ", i
+        i = i + 1
+    end subroutine debug_print
 end program test_lammpstrj
 

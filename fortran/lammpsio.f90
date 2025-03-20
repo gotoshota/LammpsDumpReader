@@ -5,6 +5,14 @@
 module lammpsio
     implicit none
 
+    !> @brief 座標データを管理する型
+    type :: coordinates
+        real, allocatable :: data(:,:) 
+    contains
+        procedure :: wrap => wrap_coordinates 
+        procedure :: unwrap => unwrap_coordinates
+    end type coordinates
+
     !> @brief 原子データのカラムインデックスを管理する構造体
     !> @details LAMMPSダンプファイル内の各カラム（id, x, y, z など）の位置情報を保持します
     type :: AtomIndex
@@ -23,6 +31,9 @@ module lammpsio
         integer(KIND=4) :: xs = 0   !< スケーリングされたx座標のカラムインデックス
         integer(KIND=4) :: ys = 0   !< スケーリングされたy座標のカラムインデックス
         integer(KIND=4) :: zs = 0   !< スケーリングされたz座標のカラムインデックス
+        integer(KIND=4) :: xsu = 0  !< スケーリングされたアンラップしたx座標のカラムインデックス
+        integer(KIND=4) :: ysu = 0  !< スケーリングされたアンラップしたy座標のカラムインデックス
+        integer(KIND=4) :: zsu = 0  !< スケーリングされたアンラップしたz座標のカラムインデックス
     end type AtomIndex
 
     !> @brief LAMMPSトラジェクトリデータを管理する基本構造体
@@ -36,7 +47,7 @@ module lammpsio
         integer :: timestep             !< 現在のタイムステップ
         integer :: nparticles           !< 粒子数
         double precision :: box_bounds(3, 3) = 0.0d0 !< シミュレーションボックスの境界
-        real, allocatable :: coords(:, :) !< 座標データ (3, nparticles)
+        type(coordinates) :: coords
         integer, allocatable :: image_flags(:, :) !< イメージフラグ (3, nparticles)
         integer, allocatable :: id(:)   !< 原子ID
         integer, allocatable :: mol(:)  !< 分子ID
@@ -242,17 +253,27 @@ contains
                     this%atom_idx%ys = i
                 case ("zs")
                     this%atom_idx%zs = i
+                case ("xsu")
+                    this%atom_idx%xsu = i
+                case ("ysu")
+                    this%atom_idx%ysu = i
+                case ("zsu")
+                    this%atom_idx%zsu = i
                 case default
                     print *, "Error: Unknown column to read header"
                     print *, "Column: ", i
                 end select
             end do
             this%has_atom_idx = .true.
-            allocate (this%coords(3, this%nparticles)) ! x, y, z
+            if (.not. allocated(this%coords%data)) allocate (this%coords%data(3, this%nparticles)) ! x, y, z
             if (this%atom_idx%id > 0) allocate (this%id(this%nparticles))
             if (this%atom_idx%mol > 0) allocate (this%mol(this%nparticles))
             if (this%atom_idx%type > 0) allocate (this%type(this%nparticles))
             if (this%atom_idx%ix > 0) allocate (this%image_flags(3, this%nparticles))
+        end if
+
+        if (.not. allocated(this%coords%data)) then
+            allocate(this%coords%data(3, this%nparticles))
         end if
 
         do i = 1, this%nparticles
@@ -260,23 +281,23 @@ contains
             atom_parts = split_line(adjustl(line))
             do j = 1, size(atom_parts)
                 if (j == this%atom_idx%x) then
-                    read (atom_parts(j), *) this%coords(1, i)
+                    read (atom_parts(j), *) this%coords%data(1, i)
                 else if (j == this%atom_idx%y) then
-                    read (atom_parts(j), *) this%coords(2, i)
+                    read (atom_parts(j), *) this%coords%data(2, i)
                 else if (j == this%atom_idx%z) then
-                    read (atom_parts(j), *) this%coords(3, i)
+                    read (atom_parts(j), *) this%coords%data(3, i)
                 else if (j == this%atom_idx%xs) then
-                    read (atom_parts(j), *) this%coords(1, i)
+                    read (atom_parts(j), *) this%coords%data(1, i)
                 else if (j == this%atom_idx%ys) then
-                    read (atom_parts(j), *) this%coords(2, i)
+                    read (atom_parts(j), *) this%coords%data(2, i)
                 else if (j == this%atom_idx%zs) then
-                    read (atom_parts(j), *) this%coords(3, i)
+                    read (atom_parts(j), *) this%coords%data(3, i)
                 else if (j == this%atom_idx%xu) then
-                    read (atom_parts(j), *) this%coords(1, i)
+                    read (atom_parts(j), *) this%coords%data(1, i)
                 else if (j == this%atom_idx%yu) then
-                    read (atom_parts(j), *) this%coords(2, i)
+                    read (atom_parts(j), *) this%coords%data(2, i)
                 else if (j == this%atom_idx%zu) then
-                    read (atom_parts(j), *) this%coords(3, i)
+                    read (atom_parts(j), *) this%coords%data(3, i)
                 else if (j == this%atom_idx%id) then
                     read (atom_parts(j), *) this%id(i)
                 else if (j == this%atom_idx%mol) then
@@ -368,10 +389,17 @@ contains
         write (this%unit, '(I10)') this%nparticles
         
         ! ボックス境界情報を書き込み
-        write (this%unit, '(A)') "ITEM: BOX BOUNDS pp pp pp"
-        write (this%unit, '(2F15.7)') this%box_bounds(1:2, 1)  ! xlo xhi
-        write (this%unit, '(2F15.7)') this%box_bounds(1:2, 2)  ! ylo yhi
-        write (this%unit, '(2F15.7)') this%box_bounds(1:2, 3)  ! zlo zhi
+        if (ubound(this%box_bounds, 1) == 2) then
+            write (this%unit, '(A)') "ITEM: BOX BOUNDS pp pp pp"
+            write (this%unit, '(2(E20.12,1x))') this%box_bounds(:, 1)  ! xlo xhi
+            write (this%unit, '(2(E20.12,1x))') this%box_bounds(:, 2)  ! ylo yhi
+            write (this%unit, '(2(E20.12,1x))') this%box_bounds(:, 3)  ! zlo zhi
+        else
+            write (this%unit, '(A)') "ITEM: BOX BOUNDS xy xz yz pp pp pp"
+            write (this%unit, '(3E20.12)') this%box_bounds(:, 1)  ! xlo xhi xy
+            write (this%unit, '(3E20.12)') this%box_bounds(:, 2)  ! ylo yhi xz
+            write (this%unit, '(3E20.12)') this%box_bounds(:, 3)  ! zlo zhi yz
+        end if
         
         ! 原子データを書き込み
         write (this%unit, '(A)', advance='no') "ITEM: ATOMS id"
@@ -403,7 +431,7 @@ contains
             end if
             
             ! 座標を書き込み (必須)
-            write (this%unit, '(3F15.7)', advance='no') this%coords(:, i)
+            write (this%unit, '(3F15.7)', advance='no') this%coords%data(:, i)
             
             ! イメージフラグを書き込み (オプション)
             if (allocated(this%image_flags)) then
@@ -417,36 +445,38 @@ contains
 
 !> @brief 座標データをwrapするサブルーチン
 !> @details 傾いたボックスにも対応。イメージフラグを計算または使用します。
-!> @param[in,out] this トラジェクトリデータ
-!> @param[out] wrapped ラップされた座標
-subroutine wrap_coordinates(this, wrapped)
-    class(lammpstrj), intent(inout) :: this
-    real, allocatable, intent(out) :: wrapped(:,:)
+!> @param[in] this coordinates型のインスタンス
+!> @param[in,out] parent lammpstrj型のインスタンス
+!> @return wrapped ラップされた座標
+function wrap_coordinates(this, parent) result(wrapped)
+    class(coordinates), intent(in) :: this
+    class(lammpstrj), intent(inout) :: parent
+    real, allocatable :: wrapped(:,:)
     integer :: i, j, np
-    real :: L(3), lower(3), upper(3)
-    real :: h(3,3), h_inv(3,3), det
+    double precision :: L(3), lower(3), upper(3)
+    double precision :: h(3,3), h_inv(3,3), det
     real :: shifted(3), s_coords(3), s_wrapped(3)
     logical :: is_triclinic
     
     ! triclinic boxかどうかを判定（box_boundsの3列目に値があるかどうか）
     is_triclinic = .false.
-    if (abs(this%box_bounds(1,3)) > 1.0e-6 .or. &
-        abs(this%box_bounds(2,3)) > 1.0e-6 .or. &
-        abs(this%box_bounds(3,3)) > 1.0e-6) then
+    if (abs(parent%box_bounds(1,3)) > 1.0e-6 .or. &
+        abs(parent%box_bounds(2,3)) > 1.0e-6 .or. &
+        abs(parent%box_bounds(3,3)) > 1.0e-6) then
         is_triclinic = .true.
     end if
 
-    if (.not. allocated(this%coords)) then
-        print *, "Error: coords is not allocated."
+    if (.not. allocated(this%data)) then
+        print *, "Error: coords data is not allocated."
         stop 1
     end if
-    np = size(this%coords, 2)
+    np = size(this%data, 2)
     allocate(wrapped(3, np))
     
     ! 境界情報の取得
     do i = 1, 3
-        lower(i) = this%box_bounds(1, i)
-        upper(i) = this%box_bounds(2, i)
+        lower(i) = parent%box_bounds(1, i)
+        upper(i) = parent%box_bounds(2, i)
         L(i) = upper(i) - lower(i)
     end do
     
@@ -455,11 +485,11 @@ subroutine wrap_coordinates(this, wrapped)
         ! 変換行列（h行列）の作成
         ! LAMMPSのtriclinic boxでは tilt factors (xy, xz, yz) が box_bounds(1:3,3) に格納されている
         h(1,1) = L(1)
-        h(1,2) = this%box_bounds(1,3)  ! xy
-        h(1,3) = this%box_bounds(2,3)  ! xz
+        h(1,2) = parent%box_bounds(1,3)  ! xy
+        h(1,3) = parent%box_bounds(2,3)  ! xz
         h(2,1) = 0.0
         h(2,2) = L(2)
-        h(2,3) = this%box_bounds(3,3)  ! yz
+        h(2,3) = parent%box_bounds(3,3)  ! yz
         h(3,1) = 0.0
         h(3,2) = 0.0
         h(3,3) = L(3)
@@ -480,17 +510,17 @@ subroutine wrap_coordinates(this, wrapped)
         h_inv(3,3) = (h(1,1)*h(2,2) - h(1,2)*h(2,1))/det
         
         ! イメージフラグが必要ならアロケート
-        if (.not. allocated(this%image_flags)) then
-            allocate(this%image_flags(3, np))
-            this%image_flags = 0
+        if (.not. allocated(parent%image_flags)) then
+            allocate(parent%image_flags(3, np))
+            parent%image_flags = 0
         end if
         
         ! 各粒子についてwrapを実行
         do j = 1, np
-            if (.not. allocated(this%image_flags)) then
+            if (.not. allocated(parent%image_flags)) then
                 ! イメージフラグがない場合は計算する
                 ! 座標を原点シフト
-                shifted = this%coords(:, j) - lower
+                shifted = this%data(:, j) - lower
                 
                 ! 分数座標（fractional coordinates）に変換
                 s_coords(1) = h_inv(1,1)*shifted(1) + h_inv(1,2)*shifted(2) + h_inv(1,3)*shifted(3)
@@ -498,13 +528,13 @@ subroutine wrap_coordinates(this, wrapped)
                 s_coords(3) = h_inv(3,1)*shifted(1) + h_inv(3,2)*shifted(2) + h_inv(3,3)*shifted(3)
                 
                 ! 分数座標を [0,1) の範囲にラップ
-                this%image_flags(1, j) = int(floor(s_coords(1)))
-                this%image_flags(2, j) = int(floor(s_coords(2)))
-                this%image_flags(3, j) = int(floor(s_coords(3)))
+                parent%image_flags(1, j) = int(floor(s_coords(1)))
+                parent%image_flags(2, j) = int(floor(s_coords(2)))
+                parent%image_flags(3, j) = int(floor(s_coords(3)))
                 
-                s_wrapped(1) = s_coords(1) - this%image_flags(1, j)
-                s_wrapped(2) = s_coords(2) - this%image_flags(2, j)
-                s_wrapped(3) = s_coords(3) - this%image_flags(3, j)
+                s_wrapped(1) = s_coords(1) - parent%image_flags(1, j)
+                s_wrapped(2) = s_coords(2) - parent%image_flags(2, j)
+                s_wrapped(3) = s_coords(3) - parent%image_flags(3, j)
                 
                 ! 実座標に戻す
                 wrapped(1, j) = h(1,1)*s_wrapped(1) + h(1,2)*s_wrapped(2) + h(1,3)*s_wrapped(3) + lower(1)
@@ -513,58 +543,60 @@ subroutine wrap_coordinates(this, wrapped)
             else
                 ! イメージフラグが利用可能な場合でも、傾いたボックスでは変換行列を使用
                 ! h行列とイメージフラグを使って補正
-                wrapped(1, j) = this%coords(1, j) - (h(1,1)*this%image_flags(1, j) + h(1,2)*this%image_flags(2, j) + h(1,3)*this%image_flags(3, j))
-                wrapped(2, j) = this%coords(2, j) - (h(2,1)*this%image_flags(1, j) + h(2,2)*this%image_flags(2, j) + h(2,3)*this%image_flags(3, j))
-                wrapped(3, j) = this%coords(3, j) - (h(3,1)*this%image_flags(1, j) + h(3,2)*this%image_flags(2, j) + h(3,3)*this%image_flags(3, j))
+                wrapped(1, j) = this%data(1, j) - (h(1,1)*parent%image_flags(1, j) + h(1,2)*parent%image_flags(2, j) + h(1,3)*parent%image_flags(3, j))
+                wrapped(2, j) = this%data(2, j) - (h(2,1)*parent%image_flags(1, j) + h(2,2)*parent%image_flags(2, j) + h(2,3)*parent%image_flags(3, j))
+                wrapped(3, j) = this%data(3, j) - (h(3,1)*parent%image_flags(1, j) + h(3,2)*parent%image_flags(2, j) + h(3,3)*parent%image_flags(3, j))
             end if
         end do
     else
         ! 直交ボックスの場合（既存のコード）
-        if (.not. allocated(this%image_flags)) then
-            allocate(this%image_flags(3, np))
+        if (.not. allocated(parent%image_flags)) then
+            allocate(parent%image_flags(3, np))
         end if
         
         do i = 1, 3
             do j = 1, np
-                this%image_flags(i, j) = int(floor((this%coords(i, j) - lower(i))/L(i)))
-                wrapped(i, j) = this%coords(i, j) - this%image_flags(i, j)*L(i)
+                parent%image_flags(i, j) = int(floor((this%data(i, j) - lower(i))/L(i)))
+                wrapped(i, j) = this%data(i, j) - parent%image_flags(i, j)*L(i)
             end do
         end do
     end if
-end subroutine wrap_coordinates
+end function wrap_coordinates
 
 
 !> @brief 座標データをunwrapするサブルーチン
 !> @details イメージフラグを使用して周期境界条件を取り除きます。傾いたボックスにも対応。
-!> @param[in,out] this トラジェクトリデータ
-!> @param[out] unwrapped アンラップされた座標
-subroutine unwrap_coordinates(this, unwrapped)
-    class(lammpstrj), intent(inout) :: this
-    real, allocatable, intent(out) :: unwrapped(:,:)
+!> @param[in] this coordinates型のインスタンス
+!> @param[in,out] parent lammpstrj型のインスタンス
+!> @return unwrapped アンラップされた座標
+function unwrap_coordinates(this, parent) result(unwrapped)
+    class(coordinates), intent(in) :: this
+    class(lammpstrj), intent(inout) :: parent
+    real, allocatable :: unwrapped(:,:)
     integer :: i, j, np
-    real :: L(3), lower(3), upper(3)
-    real :: h(3,3)
+    double precision :: L(3), lower(3), upper(3)
+    double precision :: h(3,3)
     logical :: is_triclinic
     
     ! triclinic boxかどうかを判定
     is_triclinic = .false.
-    if (abs(this%box_bounds(1,3)) > 1.0e-6 .or. &
-        abs(this%box_bounds(2,3)) > 1.0e-6 .or. &
-        abs(this%box_bounds(3,3)) > 1.0e-6) then
+    if (abs(parent%box_bounds(1,3)) > 1.0e-6 .or. &
+        abs(parent%box_bounds(2,3)) > 1.0e-6 .or. &
+        abs(parent%box_bounds(3,3)) > 1.0e-6) then
         is_triclinic = .true.
     end if
 
-    if (.not. allocated(this%image_flags)) then
+    if (.not. allocated(parent%image_flags)) then
         print *, "Error: image_flags が定義されていません。unwrapできません。"
         stop 1
     end if
-    np = size(this%coords, 2)
+    np = size(this%data, 2)
     allocate(unwrapped(3, np))
     
     ! 境界情報の取得
     do i = 1, 3
-        lower(i) = this%box_bounds(1, i)
-        upper(i) = this%box_bounds(2, i)
+        lower(i) = parent%box_bounds(1, i)
+        upper(i) = parent%box_bounds(2, i)
         L(i) = upper(i) - lower(i)
     end do
     
@@ -572,11 +604,11 @@ subroutine unwrap_coordinates(this, unwrapped)
     if (is_triclinic) then
         ! 変換行列（h行列）の作成
         h(1,1) = L(1)
-        h(1,2) = this%box_bounds(1,3)  ! xy
-        h(1,3) = this%box_bounds(2,3)  ! xz
+        h(1,2) = parent%box_bounds(1,3)  ! xy
+        h(1,3) = parent%box_bounds(2,3)  ! xz
         h(2,1) = 0.0
         h(2,2) = L(2)
-        h(2,3) = this%box_bounds(3,3)  ! yz
+        h(2,3) = parent%box_bounds(3,3)  ! yz
         h(3,1) = 0.0
         h(3,2) = 0.0
         h(3,3) = L(3)
@@ -584,18 +616,18 @@ subroutine unwrap_coordinates(this, unwrapped)
         ! 各粒子についてunwrapを実行
         do j = 1, np
             ! h行列とイメージフラグの積を現在の座標に加える
-            unwrapped(1, j) = this%coords(1, j) + (h(1,1)*this%image_flags(1, j) + h(1,2)*this%image_flags(2, j) + h(1,3)*this%image_flags(3, j))
-            unwrapped(2, j) = this%coords(2, j) + (h(2,1)*this%image_flags(1, j) + h(2,2)*this%image_flags(2, j) + h(2,3)*this%image_flags(3, j))
-            unwrapped(3, j) = this%coords(3, j) + (h(3,1)*this%image_flags(1, j) + h(3,2)*this%image_flags(2, j) + h(3,3)*this%image_flags(3, j))
+            unwrapped(1, j) = this%data(1, j) + (h(1,1)*parent%image_flags(1, j) + h(1,2)*parent%image_flags(2, j) + h(1,3)*parent%image_flags(3, j))
+            unwrapped(2, j) = this%data(2, j) + (h(2,1)*parent%image_flags(1, j) + h(2,2)*parent%image_flags(2, j) + h(2,3)*parent%image_flags(3, j))
+            unwrapped(3, j) = this%data(3, j) + (h(3,1)*parent%image_flags(1, j) + h(3,2)*parent%image_flags(2, j) + h(3,3)*parent%image_flags(3, j))
         end do
     else
         ! 直交ボックスの場合（既存のコード）
         do i = 1, 3
             do j = 1, np
-                unwrapped(i, j) = this%coords(i, j) + this%image_flags(i, j)*L(i)
+                unwrapped(i, j) = this%data(i, j) + parent%image_flags(i, j)*L(i)
             end do
         end do
     end if
-end subroutine unwrap_coordinates
+end function unwrap_coordinates
 
 end module lammpsio
