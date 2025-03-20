@@ -484,6 +484,15 @@ function wrap_coordinates(this, parent) result(wrapped)
     if (is_triclinic) then
         ! 変換行列（h行列）の作成
         ! LAMMPSのtriclinic boxでは tilt factors (xy, xz, yz) が box_bounds(1:3,3) に格納されている
+        !h(1,1) = L(1)
+        !h(1,2) = parent%box_bounds(1,3)  ! xy
+        !h(1,3) = parent%box_bounds(2,3)  ! xz
+        !h(2,1) = 0.0
+        !h(2,2) = L(2)
+        !h(2,3) = parent%box_bounds(3,3)  ! yz
+        !h(3,1) = 0.0
+        !h(3,2) = 0.0
+        !h(3,3) = L(3)
         h(1,1) = L(1)
         h(1,2) = parent%box_bounds(1,3)  ! xy
         h(1,3) = parent%box_bounds(2,3)  ! xz
