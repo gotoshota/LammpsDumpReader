@@ -57,16 +57,17 @@ program test_lammpstrj
 
         ! サンプルとして10番目の粒子の座標を表示
         if (reader%nparticles >= 10) then
-            print *, "Coords of particle 10: ", reader%coords%data(:, 10)
+            print *, "Coords of particle 10: ", reader%coords%coords(:, 10)
             if (allocated(reader%id)) print *, "ID of particle 10: ", reader%id(10)
             if (allocated(reader%type)) print *, "Type of particle 10: ", reader%type(10)
         end if
 
         ! 書き込みテスト
         if (test_write) then
+
             ! mol_id = 1の粒子数をカウント
             count_mol1 = 0
-            
+
             if (allocated(reader%mol)) then
                 do j = 1, reader%nparticles
                     if (reader%mol(j) == 1) count_mol1 = count_mol1 + 1
@@ -75,20 +76,16 @@ program test_lammpstrj
                 print *, "警告: mol配列が割り当てられていません。全粒子を書き出します。"
                 count_mol1 = reader%nparticles
             end if
-            
-            ! reader からデータをコピー
-            writer%timestep = reader%timestep
-            writer%nparticles = count_mol1  ! mol_id = 1の粒子数のみ
-            writer%box_bounds = reader%box_bounds
-            
+
+
             ! 配列データのコピー（mol_id = 1の粒子のみ）
-            if (.not. allocated(writer%coords%data)) then
-                allocate(writer%coords%data(3, count_mol1))
-            else if (size(writer%coords%data, 2) /= count_mol1) then
-                deallocate(writer%coords%data)
-                allocate(writer%coords%data(3, count_mol1))
+            if (.not. allocated(writer%coords%coords)) then
+                allocate(writer%coords%coords(3, count_mol1))
+            else if (size(writer%coords%coords, 2) /= count_mol1) then
+                deallocate(writer%coords%coords)
+                allocate(writer%coords%coords(3, count_mol1))
             end if
-            
+
             ! その他の配列も必要に応じて再割り当て
             if (allocated(reader%id)) then
                 if (.not. allocated(writer%id) .or. size(writer%id) /= count_mol1) then
@@ -96,48 +93,49 @@ program test_lammpstrj
                     allocate(writer%id(count_mol1))
                 end if
             end if
-            
+
             if (allocated(reader%type)) then
                 if (.not. allocated(writer%type) .or. size(writer%type) /= count_mol1) then
                     if (allocated(writer%type)) deallocate(writer%type)
                     allocate(writer%type(count_mol1))
                 end if
             end if
-            
+
             if (allocated(reader%mol)) then
                 if (.not. allocated(writer%mol) .or. size(writer%mol) /= count_mol1) then
                     if (allocated(writer%mol)) deallocate(writer%mol)
                     allocate(writer%mol(count_mol1))
                 end if
             end if
-            
+
             if (allocated(reader%image_flags)) then
                 if (.not. allocated(writer%image_flags) .or. size(writer%image_flags, 2) /= count_mol1) then
                     if (allocated(writer%image_flags)) deallocate(writer%image_flags)
                     allocate(writer%image_flags(3, count_mol1))
                 end if
             end if
-            
-            ! mol_id = 1の粒子データのみコピー
+
+            !! mol_id = 1の粒子データのみコピー
+            wrapped = reader%coords%wrap(reader)
             new_idx = 0
             do j = 1, reader%nparticles
                 if (.not. allocated(reader%mol) .or. reader%mol(j) == 1) then
                     new_idx = new_idx + 1
-                    !writer%coords%data(:, new_idx) = reader%coords%data(:, j)
+                    !writer%coords%coords(:, new_idx) = reader%coords%coords(:, j)
                     ! Use the wrapped coordinates
                     if (.not. allocated(wrapped)) then
                         allocate(wrapped(3, reader%nparticles))
                     end if
-                    wrapped = reader%coords%wrap(reader)
-                    writer%coords%data(:, new_idx) = wrapped(:, j)
+                    writer%coords%coords(:, new_idx) = wrapped(:, j)
                     if (.not. allocated(writer%image_flags)) then
                         allocate(writer%image_flags(3, count_mol1))
                     end if
-                    
+
                     if (allocated(reader%id)) writer%id(new_idx) = reader%id(j)
                     if (allocated(reader%type)) writer%type(new_idx) = reader%type(j)
                     if (allocated(reader%mol)) writer%mol(new_idx) = reader%mol(j)
                     if (allocated(reader%image_flags)) writer%image_flags(:, new_idx) = reader%image_flags(:, j)
+
                 end if
             end do
             
