@@ -416,11 +416,25 @@ contains
 
 
 !> @brief 座標データをwrapするサブルーチン
+!> @details 傾いたボックスにも対応。イメージフラグを計算または使用します。
+!> @param[in,out] this トラジェクトリデータ
+!> @param[out] wrapped ラップされた座標
 subroutine wrap_coordinates(this, wrapped)
     class(lammpstrj), intent(inout) :: this
     real, allocatable, intent(out) :: wrapped(:,:)
     integer :: i, j, np
-    real :: L, lower, upper
+    real :: L(3), lower(3), upper(3)
+    real :: h(3,3), h_inv(3,3), det
+    real :: shifted(3), s_coords(3), s_wrapped(3)
+    logical :: is_triclinic
+    
+    ! triclinic boxかどうかを判定（box_boundsの3列目に値があるかどうか）
+    is_triclinic = .false.
+    if (abs(this%box_bounds(1,3)) > 1.0e-6 .or. &
+        abs(this%box_bounds(2,3)) > 1.0e-6 .or. &
+        abs(this%box_bounds(3,3)) > 1.0e-6) then
+        is_triclinic = .true.
+    end if
 
     if (.not. allocated(this%coords)) then
         print *, "Error: coords is not allocated."
@@ -428,28 +442,117 @@ subroutine wrap_coordinates(this, wrapped)
     end if
     np = size(this%coords, 2)
     allocate(wrapped(3, np))
-    if (.not. allocated(this%image_flags)) then
-        allocate(this%image_flags(3, np))
-    end if
-
+    
+    ! 境界情報の取得
     do i = 1, 3
-        lower = this%box_bounds(i, 1)
-        upper = this%box_bounds(i, 2)
-        L = upper - lower
-        do j = 1, np
-            this%image_flags(i, j) = int(floor((this%coords(i, j) - lower)/L))
-            wrapped(i, j) = this%coords(i, j) - this%image_flags(i, j)*L
-        end do
+        lower(i) = this%box_bounds(1, i)
+        upper(i) = this%box_bounds(2, i)
+        L(i) = upper(i) - lower(i)
     end do
+    
+    ! 傾いたボックスの場合
+    if (is_triclinic) then
+        ! 変換行列（h行列）の作成
+        ! LAMMPSのtriclinic boxでは tilt factors (xy, xz, yz) が box_bounds(1:3,3) に格納されている
+        h(1,1) = L(1)
+        h(1,2) = this%box_bounds(1,3)  ! xy
+        h(1,3) = this%box_bounds(2,3)  ! xz
+        h(2,1) = 0.0
+        h(2,2) = L(2)
+        h(2,3) = this%box_bounds(3,3)  ! yz
+        h(3,1) = 0.0
+        h(3,2) = 0.0
+        h(3,3) = L(3)
+        
+        ! 行列の逆行列を計算
+        det = h(1,1)*(h(2,2)*h(3,3) - h(2,3)*h(3,2)) - &
+              h(1,2)*(h(2,1)*h(3,3) - h(2,3)*h(3,1)) + &
+              h(1,3)*(h(2,1)*h(3,2) - h(2,2)*h(3,1))
+              
+        h_inv(1,1) = (h(2,2)*h(3,3) - h(2,3)*h(3,2))/det
+        h_inv(1,2) = (h(1,3)*h(3,2) - h(1,2)*h(3,3))/det
+        h_inv(1,3) = (h(1,2)*h(2,3) - h(1,3)*h(2,2))/det
+        h_inv(2,1) = (h(2,3)*h(3,1) - h(2,1)*h(3,3))/det
+        h_inv(2,2) = (h(1,1)*h(3,3) - h(1,3)*h(3,1))/det
+        h_inv(2,3) = (h(1,3)*h(2,1) - h(1,1)*h(2,3))/det
+        h_inv(3,1) = (h(2,1)*h(3,2) - h(2,2)*h(3,1))/det
+        h_inv(3,2) = (h(1,2)*h(3,1) - h(1,1)*h(3,2))/det
+        h_inv(3,3) = (h(1,1)*h(2,2) - h(1,2)*h(2,1))/det
+        
+        ! イメージフラグが必要ならアロケート
+        if (.not. allocated(this%image_flags)) then
+            allocate(this%image_flags(3, np))
+            this%image_flags = 0
+        end if
+        
+        ! 各粒子についてwrapを実行
+        do j = 1, np
+            if (.not. allocated(this%image_flags)) then
+                ! イメージフラグがない場合は計算する
+                ! 座標を原点シフト
+                shifted = this%coords(:, j) - lower
+                
+                ! 分数座標（fractional coordinates）に変換
+                s_coords(1) = h_inv(1,1)*shifted(1) + h_inv(1,2)*shifted(2) + h_inv(1,3)*shifted(3)
+                s_coords(2) = h_inv(2,1)*shifted(1) + h_inv(2,2)*shifted(2) + h_inv(2,3)*shifted(3)
+                s_coords(3) = h_inv(3,1)*shifted(1) + h_inv(3,2)*shifted(2) + h_inv(3,3)*shifted(3)
+                
+                ! 分数座標を [0,1) の範囲にラップ
+                this%image_flags(1, j) = int(floor(s_coords(1)))
+                this%image_flags(2, j) = int(floor(s_coords(2)))
+                this%image_flags(3, j) = int(floor(s_coords(3)))
+                
+                s_wrapped(1) = s_coords(1) - this%image_flags(1, j)
+                s_wrapped(2) = s_coords(2) - this%image_flags(2, j)
+                s_wrapped(3) = s_coords(3) - this%image_flags(3, j)
+                
+                ! 実座標に戻す
+                wrapped(1, j) = h(1,1)*s_wrapped(1) + h(1,2)*s_wrapped(2) + h(1,3)*s_wrapped(3) + lower(1)
+                wrapped(2, j) = h(2,1)*s_wrapped(1) + h(2,2)*s_wrapped(2) + h(2,3)*s_wrapped(3) + lower(2)
+                wrapped(3, j) = h(3,1)*s_wrapped(1) + h(3,2)*s_wrapped(2) + h(3,3)*s_wrapped(3) + lower(3)
+            else
+                ! イメージフラグが利用可能な場合でも、傾いたボックスでは変換行列を使用
+                ! h行列とイメージフラグを使って補正
+                wrapped(1, j) = this%coords(1, j) - (h(1,1)*this%image_flags(1, j) + h(1,2)*this%image_flags(2, j) + h(1,3)*this%image_flags(3, j))
+                wrapped(2, j) = this%coords(2, j) - (h(2,1)*this%image_flags(1, j) + h(2,2)*this%image_flags(2, j) + h(2,3)*this%image_flags(3, j))
+                wrapped(3, j) = this%coords(3, j) - (h(3,1)*this%image_flags(1, j) + h(3,2)*this%image_flags(2, j) + h(3,3)*this%image_flags(3, j))
+            end if
+        end do
+    else
+        ! 直交ボックスの場合（既存のコード）
+        if (.not. allocated(this%image_flags)) then
+            allocate(this%image_flags(3, np))
+        end if
+        
+        do i = 1, 3
+            do j = 1, np
+                this%image_flags(i, j) = int(floor((this%coords(i, j) - lower(i))/L(i)))
+                wrapped(i, j) = this%coords(i, j) - this%image_flags(i, j)*L(i)
+            end do
+        end do
+    end if
 end subroutine wrap_coordinates
 
 
 !> @brief 座標データをunwrapするサブルーチン
+!> @details イメージフラグを使用して周期境界条件を取り除きます。傾いたボックスにも対応。
+!> @param[in,out] this トラジェクトリデータ
+!> @param[out] unwrapped アンラップされた座標
 subroutine unwrap_coordinates(this, unwrapped)
     class(lammpstrj), intent(inout) :: this
     real, allocatable, intent(out) :: unwrapped(:,:)
     integer :: i, j, np
-    real :: L, lower, upper
+    real :: L(3), lower(3), upper(3)
+    real :: h(3,3)
+    logical :: is_triclinic
+    
+    ! triclinic boxかどうかを判定
+    is_triclinic = .false.
+    if (abs(this%box_bounds(1,3)) > 1.0e-6 .or. &
+        abs(this%box_bounds(2,3)) > 1.0e-6 .or. &
+        abs(this%box_bounds(3,3)) > 1.0e-6) then
+        is_triclinic = .true.
+    end if
 
     if (.not. allocated(this%image_flags)) then
         print *, "Error: image_flags が定義されていません。unwrapできません。"
@@ -457,15 +560,42 @@ subroutine unwrap_coordinates(this, unwrapped)
     end if
     np = size(this%coords, 2)
     allocate(unwrapped(3, np))
-
+    
+    ! 境界情報の取得
     do i = 1, 3
-        lower = this%box_bounds(i, 1)
-        upper = this%box_bounds(i, 2)
-        L = upper - lower
-        do j = 1, np
-            unwrapped(i, j) = this%coords(i, j) + this%image_flags(i, j)*L
-        end do
+        lower(i) = this%box_bounds(1, i)
+        upper(i) = this%box_bounds(2, i)
+        L(i) = upper(i) - lower(i)
     end do
+    
+    ! 傾いたボックスの場合
+    if (is_triclinic) then
+        ! 変換行列（h行列）の作成
+        h(1,1) = L(1)
+        h(1,2) = this%box_bounds(1,3)  ! xy
+        h(1,3) = this%box_bounds(2,3)  ! xz
+        h(2,1) = 0.0
+        h(2,2) = L(2)
+        h(2,3) = this%box_bounds(3,3)  ! yz
+        h(3,1) = 0.0
+        h(3,2) = 0.0
+        h(3,3) = L(3)
+        
+        ! 各粒子についてunwrapを実行
+        do j = 1, np
+            ! h行列とイメージフラグの積を現在の座標に加える
+            unwrapped(1, j) = this%coords(1, j) + (h(1,1)*this%image_flags(1, j) + h(1,2)*this%image_flags(2, j) + h(1,3)*this%image_flags(3, j))
+            unwrapped(2, j) = this%coords(2, j) + (h(2,1)*this%image_flags(1, j) + h(2,2)*this%image_flags(2, j) + h(2,3)*this%image_flags(3, j))
+            unwrapped(3, j) = this%coords(3, j) + (h(3,1)*this%image_flags(1, j) + h(3,2)*this%image_flags(2, j) + h(3,3)*this%image_flags(3, j))
+        end do
+    else
+        ! 直交ボックスの場合（既存のコード）
+        do i = 1, 3
+            do j = 1, np
+                unwrapped(i, j) = this%coords(i, j) + this%image_flags(i, j)*L(i)
+            end do
+        end do
+    end if
 end subroutine unwrap_coordinates
 
 end module lammpsio

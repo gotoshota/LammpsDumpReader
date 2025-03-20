@@ -5,8 +5,6 @@
 @brief LAMMPSトラジェクトリファイルの読み込みと書き込みを行うモジュール
 @details このモジュールはLAMMPSの分子動力学シミュレーションの出力ファイル（dump形式）を
 読み込み、処理、書き込みするための機能を提供します。lammpsio.f90のPython実装版です。
-@author 開発者名
-@date 作成日
 """
 
 import numpy as np
@@ -16,7 +14,14 @@ import math
 class CoordinatesWrapper:
     def __init__(self, parent):
         self.parent = parent
-
+        self.is_wrapped = None
+        self.is_triclinic = None
+        if parent.box_bounds.shape[1] == 3:
+            self.is_triclinic = True
+        elif parent.box_bounds.shape[1] == 2:
+            self.is_triclinic = False
+        else:
+            raise ValueError("box_bounds is not defined")
     def __array__(self):
         return self.parent._coords
 
@@ -30,30 +35,145 @@ class CoordinatesWrapper:
         self.parent._coords[key] = value
 
     def wrap(self):
+        """
+        @brief 座標をボックス内にラップする．
+        @details ボックス境界が定義されていない場合はエラーを返す．
+        イメージフラグが定義されている場合はそれを使用してラップする．
+        それ以外の場合はイメージフラグを計算してラップする．
+        傾いたボックスもサポートされる．
+        @return ラップされた座標
+        """
         if self.parent.box_bounds is None:
             raise ValueError("box_bounds is not defined")
-        import numpy as np
+        elif self.is_wrapped:
+            return self.parent._coords
+        
         bounds = self.parent.box_bounds
         coords = self.parent._coords
         lower = bounds[:, 0]
         upper = bounds[:, 1]
         L = upper - lower
-        computed_flags = np.floor((coords - lower[:, None]) / L[:, None]).astype(int)
-        wrapped = coords - computed_flags * L[:, None]
-        self.parent.image_flags = computed_flags
-        return wrapped
+        
+        # 傾いたボックスの処理
+        if self.is_triclinic:
+            # 傾きファクター（tilt factors）を取得
+            tilt_factors = bounds[:, 2]
+            xy, xz, yz = tilt_factors
+            
+            # 変換行列（h行列）の作成
+            h = np.array([
+                [L[0], xy, xz],
+                [0, L[1], yz],
+                [0, 0, L[2]]
+            ])
+            
+            if self.parent.image_flags is None:
+                # イメージフラグがない場合は計算する
+                # 逆行列を計算
+                h_inv = np.linalg.inv(h)
+                
+                # 座標を原点シフト
+                shifted_coords = coords - lower[:, None]
+                
+                # 分数座標（fractional coordinates）に変換
+                s_coords = np.zeros_like(shifted_coords)
+                for i in range(coords.shape[1]):
+                    s_coords[:, i] = h_inv @ shifted_coords[:, i]
+                
+                # 分数座標を [0,1) の範囲にラップ
+                computed_flags = np.floor(s_coords).astype(int)
+                s_coords_wrapped = s_coords - computed_flags
+                
+                # 実座標に戻す
+                wrapped = np.zeros_like(coords)
+                for i in range(coords.shape[1]):
+                    wrapped[:, i] = h @ s_coords_wrapped[:, i] + lower
+                
+                # イメージフラグを保存
+                self.parent.image_flags = computed_flags
+            else:
+                # イメージフラグが利用可能な場合でも、傾いたボックスでは変換行列を使用
+                wrapped = np.zeros_like(coords)
+                for i in range(coords.shape[1]):
+                    # h行列とイメージフラグを使って補正
+                    image_correction = h @ self.parent.image_flags[:, i]
+                    wrapped[:, i] = coords[:, i] - image_correction
+            
+            self.is_wrapped = True
+            return wrapped
+            
+        elif self.parent.image_flags is None:
+            # 直交ボックスの場合は簡単な計算でラップできる
+            computed_flags = np.floor((coords - lower[:, None]) / L[:, None]).astype(int)
+            wrapped = coords - computed_flags * L[:, None]
+            self.parent.image_flags = computed_flags
+            self.is_wrapped = True
+            return wrapped
+        else:
+            # イメージフラグが利用可能な場合（直交ボックス）
+            wrapped = coords - self.parent.image_flags * L[:, None]
+            self.is_wrapped = True
+            return wrapped
 
     def unwrap(self):
+        """
+        @brief 座標をボックスの外にアンラップする．
+        @details イメージフラグが必要．傾いたボックスにも対応．
+        @return アンラップされた座標
+        """
         if self.parent.image_flags is None:
             raise ValueError("Cannot unwrap coordinate: image_flags is not available")
-        import numpy as np
+        
         bounds = self.parent.box_bounds
         coords = self.parent._coords
         lower = bounds[:, 0]
         upper = bounds[:, 1]
         L = upper - lower
-        unwrapped = coords + self.parent.image_flags * L[:, None]
-        return unwrapped
+        
+        # 傾いたボックスの処理
+        if self.is_triclinic:
+            # 傾きファクター（tilt factors）を取得
+            tilt_factors = bounds[:, 2]
+            xy, xz, yz = tilt_factors
+            
+            # 変換行列（h行列）の作成
+            h = np.array([
+                [L[0], xy, xz],
+                [0, L[1], yz],
+                [0, 0, L[2]]
+            ])
+            
+            # イメージフラグを使って実座標にアンラップ
+            unwrapped = np.zeros_like(coords)
+            for i in range(coords.shape[1]):
+                # アンラップは h行列とイメージフラグの積を現在の座標に加えることで行う
+                unwrapped[:, i] = coords[:, i] + h @ self.parent.image_flags[:, i]
+            
+            self.is_wrapped = False
+            return unwrapped
+        else:
+            # 直交ボックスの場合は簡単な計算でアンラップできる
+            unwrapped = coords + self.parent.image_flags * L[:, None]
+            self.is_wrapped = False
+            return unwrapped
+
+def box_size_and_center(box_bounds):
+    """
+    @brief ボックスのサイズと中心座標を計算します
+    @param box_bounds ボックス境界の配列 (3, 2)または(3, 3)
+    @return サイズと中心座標のタプル (size, center)
+    """
+    lower = box_bounds[:, 0]
+    upper = box_bounds[:, 1]
+    
+    # 直交座標系での各軸方向のサイズ
+    size = upper - lower
+    
+    # 傾いたボックスの場合、中心は単純な平均ではない可能性がある
+    # しかし、LAMMPSの実装に合わせて単純な平均を使用
+    center = (upper + lower) / 2.0
+    
+    return size, center
 
 class AtomIndex:
     """
@@ -81,6 +201,9 @@ class AtomIndex:
         self.xs = 0    #!< スケーリングされたx座標のカラムインデックス
         self.ys = 0    #!< スケーリングされたy座標のカラムインデックス
         self.zs = 0    #!< スケーリングされたz座標のカラムインデックス
+        self.xsu = 0   #!< アンラップしたスケーリングされたx座標のカラムインデックス
+        self.ysu = 0   #!< アンラップしたスケーリングされたy座標のカラムインデックス
+        self.zsu = 0   #!< アンラップしたスケーリングされたz座標のカラムインデックス
 
 
 class lammpstrj:
@@ -197,36 +320,9 @@ class lammpstrj:
                 
                 for i in range(ncols):
                     col_name = atom_header_parts[i + 2].strip()
-                    if col_name == "id":
-                        self.atom_idx.id = i
-                    elif col_name == "mol":
-                        self.atom_idx.mol = i
-                    elif col_name == "type":
-                        self.atom_idx.type = i
-                    elif col_name == "xu":
-                        self.atom_idx.xu = i
-                    elif col_name == "yu":
-                        self.atom_idx.yu = i
-                    elif col_name == "zu":
-                        self.atom_idx.zu = i
-                    elif col_name == "x":
-                        self.atom_idx.x = i
-                    elif col_name == "y":
-                        self.atom_idx.y = i
-                    elif col_name == "z":
-                        self.atom_idx.z = i
-                    elif col_name == "ix":
-                        self.atom_idx.ix = i
-                    elif col_name == "iy":
-                        self.atom_idx.iy = i
-                    elif col_name == "iz":
-                        self.atom_idx.iz = i
-                    elif col_name == "xs":
-                        self.atom_idx.xs = i
-                    elif col_name == "ys":
-                        self.atom_idx.ys = i
-                    elif col_name == "zs":
-                        self.atom_idx.zs = i
+                    # 属性名が有効な場合、直接その属性に値を設定
+                    if hasattr(self.atom_idx, col_name):
+                        setattr(self.atom_idx, col_name, i)
                 
                 self.has_atom_idx = True
                 
@@ -249,10 +345,16 @@ class lammpstrj:
                 # 座標の読み込み
                 if self.atom_idx.x > 0:
                     self.coords[0, i] = float(parts[self.atom_idx.x])
+                    if self.coords.is_wrapped is None:
+                        self.coords.is_wrapped = True
                 elif self.atom_idx.xu > 0:
                     self.coords[0, i] = float(parts[self.atom_idx.xu])
+                    if self.coords.is_wrapped is None:
+                        self.coords.is_wrapped = False
                 elif self.atom_idx.xs > 0:
                     self.coords[0, i] = float(parts[self.atom_idx.xs])
+                    if self.coords.is_wrapped is None:
+                        self.coords.is_wrapped = True
                 
                 if self.atom_idx.y > 0:
                     self.coords[1, i] = float(parts[self.atom_idx.y])
@@ -341,8 +443,8 @@ class lammpstrj:
             if self.mol is not None:
                 line += f"{self.mol[i]} "
             
-            # 座標を書き込み (必須)
-            line += f"{self.coords[0, i]} {self.coords[1, i]} {self.coords[2, i]}"
+            # wrapped座標を書き込み (必須)
+            line += f"{self.coords.wrapped[0, i]} {self.coords.wrapped[1, i]} {self.coords.wrapped[2, i]}"
             
             # イメージフラグを書き込み (オプション)
             if self.image_flags is not None:
@@ -687,6 +789,7 @@ class LammpsData:
                     )
                     self.atoms.image_flag.append(
                         (float(parts[6]), float(parts[7]), float(parts[8]))
+                    )
             elif current_section == "Masses":
                 if len(parts) >= 2:
                     self.masses.id.append(int(parts[0]))
