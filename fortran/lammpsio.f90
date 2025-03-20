@@ -517,36 +517,27 @@ function wrap_coordinates(this, parent) result(wrapped)
         
         ! 各粒子についてwrapを実行
         do j = 1, np
-            if (.not. allocated(parent%image_flags)) then
-                ! イメージフラグがない場合は計算する
-                ! 座標を原点シフト
-                shifted = this%data(:, j) - lower
-                
-                ! 分数座標（fractional coordinates）に変換
-                s_coords(1) = h_inv(1,1)*shifted(1) + h_inv(1,2)*shifted(2) + h_inv(1,3)*shifted(3)
-                s_coords(2) = h_inv(2,1)*shifted(1) + h_inv(2,2)*shifted(2) + h_inv(2,3)*shifted(3)
-                s_coords(3) = h_inv(3,1)*shifted(1) + h_inv(3,2)*shifted(2) + h_inv(3,3)*shifted(3)
-                
-                ! 分数座標を [0,1) の範囲にラップ
-                parent%image_flags(1, j) = int(floor(s_coords(1)))
-                parent%image_flags(2, j) = int(floor(s_coords(2)))
-                parent%image_flags(3, j) = int(floor(s_coords(3)))
-                
-                s_wrapped(1) = s_coords(1) - parent%image_flags(1, j)
-                s_wrapped(2) = s_coords(2) - parent%image_flags(2, j)
-                s_wrapped(3) = s_coords(3) - parent%image_flags(3, j)
-                
-                ! 実座標に戻す
-                wrapped(1, j) = h(1,1)*s_wrapped(1) + h(1,2)*s_wrapped(2) + h(1,3)*s_wrapped(3) + lower(1)
-                wrapped(2, j) = h(2,1)*s_wrapped(1) + h(2,2)*s_wrapped(2) + h(2,3)*s_wrapped(3) + lower(2)
-                wrapped(3, j) = h(3,1)*s_wrapped(1) + h(3,2)*s_wrapped(2) + h(3,3)*s_wrapped(3) + lower(3)
-            else
-                ! イメージフラグが利用可能な場合でも、傾いたボックスでは変換行列を使用
-                ! h行列とイメージフラグを使って補正
-                wrapped(1, j) = this%data(1, j) - (h(1,1)*parent%image_flags(1, j) + h(1,2)*parent%image_flags(2, j) + h(1,3)*parent%image_flags(3, j))
-                wrapped(2, j) = this%data(2, j) - (h(2,1)*parent%image_flags(1, j) + h(2,2)*parent%image_flags(2, j) + h(2,3)*parent%image_flags(3, j))
-                wrapped(3, j) = this%data(3, j) - (h(3,1)*parent%image_flags(1, j) + h(3,2)*parent%image_flags(2, j) + h(3,3)*parent%image_flags(3, j))
-            end if
+            ! 座標を原点シフト
+            shifted = this%data(:, j) - lower
+
+            ! 分数座標（fractional coordinates）に変換
+            s_coords(1) = h_inv(1,1)*shifted(1) + h_inv(1,2)*shifted(2) + h_inv(1,3)*shifted(3)
+            s_coords(2) = h_inv(2,1)*shifted(1) + h_inv(2,2)*shifted(2) + h_inv(2,3)*shifted(3)
+            s_coords(3) = h_inv(3,1)*shifted(1) + h_inv(3,2)*shifted(2) + h_inv(3,3)*shifted(3)
+
+            ! 分数座標を [0,1) の範囲にラップ
+            parent%image_flags(1, j) = int(floor(s_coords(1)))
+            parent%image_flags(2, j) = int(floor(s_coords(2)))
+            parent%image_flags(3, j) = int(floor(s_coords(3)))
+
+            s_wrapped(1) = s_coords(1) - parent%image_flags(1, j)
+            s_wrapped(2) = s_coords(2) - parent%image_flags(2, j)
+            s_wrapped(3) = s_coords(3) - parent%image_flags(3, j)
+
+            ! 実座標に戻す
+            wrapped(1, j) = h(1,1)*s_wrapped(1) + h(1,2)*s_wrapped(2) + h(1,3)*s_wrapped(3) + lower(1)
+            wrapped(2, j) = h(2,1)*s_wrapped(1) + h(2,2)*s_wrapped(2) + h(2,3)*s_wrapped(3) + lower(2)
+            wrapped(3, j) = h(3,1)*s_wrapped(1) + h(3,2)*s_wrapped(2) + h(3,3)*s_wrapped(3) + lower(3)
         end do
     else
         ! 直交ボックスの場合（既存のコード）
