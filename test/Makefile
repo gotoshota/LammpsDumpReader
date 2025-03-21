@@ -11,7 +11,7 @@ DATADIR = ../data
 SRC = $(SRCDIR)/lammpsio.f90
 
 # テストプログラム
-TEST_SRC = $(TESTDIR)/main.f90
+TEST_SRC = $(TESTDIR)/test.f90
 TEST_EXE = test_fort
 
 # デフォルトターゲット

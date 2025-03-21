@@ -456,17 +456,19 @@ contains
     function wrap_coordinates(this, parent) result(wrapped)
         class(coordinates), intent(in) :: this
         class(lammpstrj), intent(inout) :: parent
-        real, allocatable :: triclinic_coords(:, :)
+        real, allocatable :: fractional_coords(:, :)
         real, allocatable :: wrapped(:, :)
         integer(kind=8), allocatable :: image_flags(:, :)
         integer :: i, j, np
-        double precision :: box_len(3), center(3)
+        double precision :: box_len(3), center(3), fractional_center(3)
         double precision :: triclinic_box_len(3), triclinic_center(3)
-        double precision :: cos_theta, sin_theta ! for triclinic box tilted with direction x
         double precision :: disp(3)
+        double precision :: box_matrix(3, 3)
+        double precision :: box_matrix_inv(3, 3)
         logical :: is_triclinic
 
         call get_box_info(parent%box_bounds, box_len, center)
+        call get_box_matrix(parent%box_bounds, box_matrix, box_matrix_inv)
         ! triclinic boxかどうかを判定（box_boundsの3列目に値があるかどうか）
         is_triclinic = .false.
         if (abs(parent%box_bounds(1, 3)) > 1.0e-8 .or. &
@@ -490,49 +492,35 @@ contains
 
         ! 傾いたボックスの場合
         if (is_triclinic) then
-        ! orthogonal -> triclinic 座標系に変換
-            allocate (triclinic_coords(3, np))
-            ! xy からせん断による歪みcos\theta を計算
-            ! cos_theta = xy / sqrt(y^2 + xy^2)
-            cos_theta = parent%box_bounds(3, 1) / sqrt(box_len(2)**2.0d0 + parent%box_bounds(3, 1)**2.0d0)
-            sin_theta = sqrt(1.0d0 - cos_theta**2.0d0)
-            print *, "cos_theta: ", cos_theta
-            print *, "sin_theta: ", sin_theta
-            print *, "box_bounds: ", parent%box_bounds(3, 1)
-            ! y' = y / sin\theta
-            triclinic_coords(2, :) = this%coords(2, :) / sin_theta
-            ! x' = x - y' * cos\theta = x - y / tan\theta
-            triclinic_coords(1, :) = this%coords(1, :) - triclinic_coords(2, :) * cos_theta
-            ! z' = z
-            triclinic_coords(3, :) = this%coords(3, :)
-            triclinic_box_len(2) = box_len(2) / sin_theta
-            triclinic_box_len(1) = box_len(1) 
-            triclinic_box_len(3) = box_len(3) 
-            triclinic_center(2) = center(2) / sin_theta
-            triclinic_center(1) = center(1) - triclinic_center(2) * cos_theta
-            triclinic_center(3) = center(3)
-
-            ! triclinic 座標系でwrap
+            allocate (fractional_coords(3, np))
             if (.not. this%has_image_flags) then
-                print *, "compute image flags"
+                ! fractional coordinates
                 do i = 1, np
-                    disp = triclinic_coords(:, i) - triclinic_center
-                    do j =1, 3
-                        image_flags(j, i) = nint(disp(j) / triclinic_box_len(j))
-                        wrapped(j, i) = triclinic_coords(j, i) - triclinic_box_len(j) * image_flags(j, i)
-                    end do
+                    fractional_coords(:, i) = matmul(box_matrix_inv, this%coords(:, i) - center)
                 end do
+
+                ! wrap fractional coordinates
+                image_flags(3, :) = nint(fractional_coords(3, :))
+                wrapped(3, :) = fractional_coords(3, :) - image_flags(3, :)
+                image_flags(2, :) = nint(fractional_coords(2, :) - image_flags(3, :)*parent%box_bounds(3, 3))
+                wrapped(2, :) = fractional_coords(2, :) - image_flags(2, :) - image_flags(3, :)*parent%box_bounds(3, 3)
+                image_flags(1, :) = nint(fractional_coords(1, :) - image_flags(3, :)*parent%box_bounds(3, 2) - &
+                                          image_flags(2, :)*parent%box_bounds(3, 1))
+                wrapped(1, :) = fractional_coords(1, :) - image_flags(1, :) - image_flags(3, :)*parent%box_bounds(3, 2) - &
+                                image_flags(2, :)*parent%box_bounds(3, 1)
                 parent%image_flags = image_flags
-            else
+
+                ! cartesian coordinates
+                wrapped = matmul(box_matrix, wrapped)
                 do i = 1, np
-                    do j =1, 3
-                        wrapped(j, i) = triclinic_coords(j, i) - triclinic_box_len(j) * parent%image_flags(j, i)
-                    end do
+                    wrapped(:, i) = wrapped(:, i) + center
                 end do
+            else
+                wrapped(3, :) = this%coords(3, :) - box_len(3)*parent%image_flags(3, :)
+                wrapped(2, :) = this%coords(2, :) - box_len(2)*parent%image_flags(2, :) - parent%image_flags(3, :)*parent%box_bounds(3, 3)
+                wrapped(1, :) = this%coords(1, :) - box_len(1)*parent%image_flags(1, :) - parent%image_flags(3, :)*parent%box_bounds(3, 2) - &
+                              parent%image_flags(2, :)*parent%box_bounds(3, 1)
             end if
-            ! triclinic -> orthorhombic 座標系に変換
-            wrapped(1, :) = wrapped(1, :) + wrapped(2, :) * cos_theta
-            wrapped(2, :) = wrapped(2, :) * sin_theta
         else
             ! 直交ボックスの場合（既存のコード）
             if (.not. allocated(parent%image_flags)) then
@@ -540,15 +528,15 @@ contains
                 do j = 1, np
                     disp = this%coords(:, j) - center
                     do i = 1, 3
-                        parent%image_flags(i, j) = nint(disp(i) / box_len(i))
-                        wrapped(i, j) = this%coords(i, j) - box_len(i) * parent%image_flags(i, j)
+                        parent%image_flags(i, j) = nint(disp(i)/box_len(i))
+                        wrapped(i, j) = this%coords(i, j) - box_len(i)*parent%image_flags(i, j)
                     end do
                 end do
             end if
 
             do j = 1, np
                 do i = 1, 3
-                    wrapped(i, j) = this%coords(i, j) - box_len(i) * parent%image_flags(i, j)
+                    wrapped(i, j) = this%coords(i, j) - box_len(i)*parent%image_flags(i, j)
                 end do
             end do
         end if
@@ -563,16 +551,20 @@ contains
         class(coordinates), intent(in) :: this
         class(lammpstrj), intent(inout) :: parent
         real, allocatable :: unwrapped(:, :)
+        real, allocatable :: fractional_coords(:, :)
+        double precision :: box_len(3), center(3)
+        double precision :: box_matrix(3, 3), box_matrix_inv(3, 3)
+
         integer :: i, j, np
-        double precision :: L(3), lower(3), upper(3)
-        double precision :: h(3, 3)
         logical :: is_triclinic
 
-        ! triclinic boxかどうかを判定
+        call get_box_matrix(parent%box_bounds, box_matrix, box_matrix_inv)
+        call get_box_info(parent%box_bounds, box_len, center)
+        ! triclinic boxかどうかを判定（box_boundsの3列目に値があるかどうか）
         is_triclinic = .false.
-        if (abs(parent%box_bounds(1, 3)) > 1.0e-6 .or. &
-            abs(parent%box_bounds(2, 3)) > 1.0e-6 .or. &
-            abs(parent%box_bounds(3, 3)) > 1.0e-6) then
+        if (abs(parent%box_bounds(1, 3)) > 1.0e-8 .or. &
+            abs(parent%box_bounds(2, 3)) > 1.0e-8 .or. &
+            abs(parent%box_bounds(3, 3)) > 1.0e-8) then
             is_triclinic = .true.
         end if
 
@@ -583,38 +575,26 @@ contains
         np = size(this%coords, 2)
         allocate (unwrapped(3, np))
 
-        ! 境界情報の取得
-        do i = 1, 3
-            lower(i) = parent%box_bounds(1, i)
-            upper(i) = parent%box_bounds(2, i)
-            L(i) = upper(i) - lower(i)
-        end do
-
         ! 傾いたボックスの場合
         if (is_triclinic) then
-            ! 変換行列（h行列）の作成
-            h(1, 1) = L(1)
-            h(1, 2) = parent%box_bounds(1, 3) ! xy
-            h(1, 3) = parent%box_bounds(2, 3) ! xz
-            h(2, 1) = 0.0
-            h(2, 2) = L(2)
-            h(2, 3) = parent%box_bounds(3, 3) ! yz
-            h(3, 1) = 0.0
-            h(3, 2) = 0.0
-            h(3, 3) = L(3)
-
-            ! 各粒子についてunwrapを実行
-            do j = 1, np
-                ! h行列とイメージフラグの積を現在の座標に加える
-            unwrapped(1, j) = this%coords(1, j) + (h(1,1)*parent%image_flags(1, j) + h(1,2)*parent%image_flags(2, j) + h(1,3)*parent%image_flags(3, j))
-            unwrapped(2, j) = this%coords(2, j) + (h(2,1)*parent%image_flags(1, j) + h(2,2)*parent%image_flags(2, j) + h(2,3)*parent%image_flags(3, j))
-            unwrapped(3, j) = this%coords(3, j) + (h(3,1)*parent%image_flags(1, j) + h(3,2)*parent%image_flags(2, j) + h(3,3)*parent%image_flags(3, j))
+            ! fractional coordinates
+            allocate (fractional_coords(3, np))
+            do i = 1, np
+                fractional_coords(:, i) = matmul(box_matrix_inv, this%coords(:, i) - center)
+            end do
+            unwrapped(3, :) = fractional_coords(3, :) + parent%image_flags(3, :)
+            unwrapped(2, :) = fractional_coords(2, :) + parent%image_flags(2, :) + parent%image_flags(3, :)*parent%box_bounds(3, 3)
+            unwrapped(1, :) = fractional_coords(1, :) + parent%image_flags(1, :) + parent%image_flags(3, :)*parent%box_bounds(3, 2) + &
+                          parent%image_flags(2, :)*parent%box_bounds(3, 1)
+            unwrapped = matmul(box_matrix, unwrapped)
+            do i = 1, np
+                unwrapped(:, i) = unwrapped(:, i) + center
             end do
         else
             ! 直交ボックスの場合（既存のコード）
-            do i = 1, 3
-                do j = 1, np
-                    unwrapped(i, j) = this%coords(i, j) + parent%image_flags(i, j)*L(i)
+            do j = 1, np
+                do i = 1, 3
+                    unwrapped(i, j) = this%coords(i, j) + parent%image_flags(i, j)*box_len(i)
                 end do
             end do
         end if
@@ -644,10 +624,45 @@ contains
         box_size(1) = xhi - xlo
         box_size(2) = yhi - ylo
         box_size(3) = zhi - zlo
-        center(1) = (box_bounds(1, 1) + box_bounds(2, 1)) / 2.0
-        center(2) = (box_bounds(1, 2) + box_bounds(2, 2)) / 2.0
-        center(3) = (box_bounds(1, 3) + box_bounds(2, 3)) / 2.0
-
+        center(1) = (box_bounds(1, 1) + box_bounds(2, 1))/2.0
+        center(2) = (box_bounds(1, 2) + box_bounds(2, 2))/2.0
+        center(3) = (box_bounds(1, 3) + box_bounds(2, 3))/2.0
     end subroutine get_box_info
+
+    subroutine get_box_matrix(box_bounds, A, A_inv)
+        implicit none
+
+        double precision, intent(in) :: box_bounds(:, :) ! LAMMPSのbox_bounds
+        double precision, intent(out) :: A(3, 3)
+        double precision, intent(out) :: A_inv(3, 3)
+
+        double precision :: xlo, xhi, ylo, yhi, zlo, zhi ! 実際のボックスの境界
+        xlo = box_bounds(1, 1) - min(0.0, box_bounds(3, 1), box_bounds(3, 2), box_bounds(3, 1) + box_bounds(3, 2))
+        xhi = box_bounds(2, 1) - max(0.0, box_bounds(3, 1), box_bounds(3, 2), box_bounds(3, 1) + box_bounds(3, 2))
+        ylo = box_bounds(1, 2) - min(0.0, box_bounds(3, 3))
+        yhi = box_bounds(2, 2) - max(0.0, box_bounds(3, 3))
+        zlo = box_bounds(1, 3)
+        zhi = box_bounds(2, 3)
+
+        A(1, 1) = xhi - xlo
+        A(2, 2) = yhi - ylo
+        A(3, 3) = zhi - zlo
+        A(1, 2) = box_bounds(3, 1)
+        A(1, 3) = box_bounds(3, 2)
+        A(2, 3) = box_bounds(3, 3)
+        A(2, 1) = 0.0
+        A(3, 1) = 0.0
+        A(3, 2) = 0.0
+
+        A_inv(1, 1) = 1.0/A(1, 1)
+        A_inv(2, 2) = 1.0/A(2, 2)
+        A_inv(3, 3) = 1.0/A(3, 3)
+        A_inv(1, 2) = -A(1, 2)/(A(1, 1)*A(2, 2))
+        A_inv(1, 3) = (A(1, 2)*A(2, 3) - A(1, 3)*A(2, 2))/(A(1, 1)*A(2, 2)*A(3, 3))
+        A_inv(2, 3) = -A(2, 3)/(A(2, 2)*A(3, 3))
+        A_inv(2, 1) = 0.0
+        A_inv(3, 1) = 0.0
+        A_inv(3, 2) = 0.0
+    end subroutine get_box_matrix
 
 end module lammpsio
