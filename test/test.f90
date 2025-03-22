@@ -25,7 +25,7 @@ program test_lammpstrj
         stop
     end if
     call get_command_argument(1, input_filename)
-    clal get_command_argument(2, output_filename)
+    call get_command_argument(2, output_filename)
     call get_command_argument(3, mode)
     if (mode == "wrap") then
         mode_wrap = .true.
